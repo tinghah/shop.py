@@ -12,8 +12,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 # === CONFIGURATION ===
-BOT_TOKEN = "8684412687:AAEp5ZRO6s1wSh0KmUP_GZa351HtNDmYJ4k"
-OWNER_ID = int(os.environ.get("OWNER_ID", "1909898183"))
+
 
 # Bank Details (All available options)
 ACCOUNT_NUMBER = "09786579514"
