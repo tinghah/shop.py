@@ -1,0 +1,10 @@
+# Git ignore
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+*.db
+orders.json
+shop.db
+*.log
