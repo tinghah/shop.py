@@ -257,7 +257,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "/pending - View pending orders\n"
     msg += "/approve <order_id> - Approve order"
     
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text(msg, parse_mode=None)
 
 async def admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
@@ -278,7 +278,7 @@ async def admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status = "✅" if item["is_active"] else "❌"
             msg += f"{status} `{iid}` - {item['name']} ({item['price']} MMK)\n"
     
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text(msg, parse_mode=None)
 
 async def admin_add_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
@@ -290,7 +290,7 @@ async def admin_add_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`id|name|name_mm|price|description|description_mm`\n\n"
         "Example:\n"
         "`3|New Course|သင်တန်းအသစ်|50,000|Course desc|သင်တန်းအသစ်အောက်မှာ`",
-        parse_mode="Markdown"
+        parse_mode=None
     )
     return "awaiting_course"
 
@@ -304,7 +304,7 @@ async def admin_add_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`id|name|name_mm|price|description|description_mm`\n\n"
         "Example:\n"
         "`s3|Web Dev|ဝက်ဘ်ဖန်တီးခြင်း|100,000|We build websites|ဝက်ဘ်ဆိုဒ်များဖန်တီးပါးစပါး`",
-        parse_mode="Markdown"
+        parse_mode=None
     )
     return "awaiting_service"
 
@@ -313,12 +313,12 @@ async def admin_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if not context.args:
-        await update.message.reply_text("Usage: `/admin delete <id>`", parse_mode="Markdown")
+        await update.message.reply_text("Usage: `/admin delete <id>`", parse_mode=None)
         return
     
     item_id = context.args[0]
     delete_item(item_id)
-    await update.message.reply_text(f"✅ Item `{item_id}` deleted!", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ Item `{item_id}` deleted!", parse_mode=None)
 
 async def admin_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
@@ -335,21 +335,21 @@ async def admin_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for oid, o in pending.items():
         msg += f"ID: `{oid}`\nUser: {o['name']} (@{o['username']})\nItem: {o['item_name']}\nAmount: {o['price']} MMK\n---\n"
     
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text(msg, parse_mode=None)
 
 async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         return
     
     if not context.args:
-        await update.message.reply_text("Usage: `/approve <order_id>`", parse_mode="Markdown")
+        await update.message.reply_text("Usage: `/approve <order_id>`", parse_mode=None)
         return
     
     order_id = context.args[0]
     orders = load_orders()
     
     if order_id not in orders:
-        await update.message.reply_text(f"❌ Order `{order_id}` not found.", parse_mode="Markdown")
+        await update.message.reply_text(f"❌ Order `{order_id}` not found.", parse_mode=None)
         return
     
     update_order_status(order_id, "paid")
@@ -360,8 +360,8 @@ async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         notify_msg = "🎉 *အတည်ပြုပါပြီ!*\n\nသင့်ငွေလွှဲကို ရရှိပြီး အတည်ပြုပါပြီ။" if lang == "mm" else "🎉 *Payment Approved!*\n\nYour order is confirmed."
         
-        await context.bot.send_message(chat_id=buyer_id, text=notify_msg, parse_mode="Markdown")
-        await update.message.reply_text(f"✅ Order `{order_id}` approved!", parse_mode="Markdown")
+        await context.bot.send_message(chat_id=buyer_id, text=notify_msg, parse_mode=None)
+        await update.message.reply_text(f"✅ Order `{order_id}` approved!", parse_mode=None)
     except Exception as e:
         await update.message.reply_text(f"✅ Approved but couldn't notify: {e}")
 
@@ -410,12 +410,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption = f"🆕 *New Payment!*\n\nOrder: `{order_id}`\nUser: {update.message.from_user.first_name}\nItem: {pending['name']}\nAmount: {pending['price']} MMK\n\n/approve {order_id}"
     
     try:
-        await context.bot.send_photo(OWNER_ID, photo.file_id, caption=caption, parse_mode="Markdown")
+        await context.bot.send_photo(OWNER_ID, photo.file_id, caption=caption, parse_mode=None)
     except:
-        await context.bot.send_message(OWNER_ID, caption, parse_mode="Markdown")
+        await context.bot.send_message(OWNER_ID, caption, parse_mode=None)
     
     context.bot_data.get("pending_payment", {}).pop(user_id, None)
-    await update.message.reply_text(get_text("payment_submitted", lang).format(order_id, pending["name"], pending["price"]), parse_mode="Markdown")
+    await update.message.reply_text(get_text("payment_submitted", lang).format(order_id, pending["name"], pending["price"]), parse_mode=None)
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -452,7 +452,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             icon = "🛠" if is_service else "📚"
             price_label = "စျေးနှုန်း" if lang == "mm" else "Price"
             text = f"{icon} *{name}*\n\n{desc}\n\n💰 *{price_label}: {item['price']} MMK*"
-            await query.edit_message_text(text, reply_markup=item_detail_keyboard(data, back, lang), parse_mode="Markdown")
+            await query.edit_message_text(text, reply_markup=item_detail_keyboard(data, back, lang), parse_mode=None)
     
     elif data.startswith("buy_"):
         raw_id = data[4:]
@@ -465,7 +465,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name = item.get("name_mm", item["name"]) if lang == "mm" else item["name"]
             text = get_text("added_to_cart", lang).format(name, item['price'], ACCOUNT_NUMBER, ACCOUNT_NAME, item['price'])
             context.bot_data.setdefault("pending_payment", {})[user_id] = {"item_id": raw_id, "price": item['price'], "name": name}
-            await query.edit_message_text(text, reply_markup=payment_keyboard(lang), parse_mode="Markdown")
+            await query.edit_message_text(text, reply_markup=payment_keyboard(lang), parse_mode=None)
     
     elif data == "my_order":
         orders = load_orders()
@@ -480,18 +480,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += f"{status} `{o['id'][-6:]}` - {o['item_name']} - {o['price']} MMK\n"
         
         markup = InlineKeyboardMarkup([[InlineKeyboardButton(get_text("back", lang), callback_data="back")]])
-        await query.edit_message_text(msg, reply_markup=markup, parse_mode="Markdown")
+        await query.edit_message_text(msg, reply_markup=markup, parse_mode=None)
     
     elif data == "payment":
         text = get_text("payment_details", lang).format(ACCOUNT_NUMBER, ACCOUNT_NAME)
-        await query.edit_message_text(text, reply_markup=main_menu_keyboard(lang), parse_mode="Markdown")
+        await query.edit_message_text(text, reply_markup=main_menu_keyboard(lang), parse_mode=None)
     
     elif data == "help":
         await query.edit_message_text(get_text("help", lang), reply_markup=main_menu_keyboard(lang))
     
     elif data == "upload_proof":
         await query.answer()
-        await context.bot.send_message(chat_id=user_id, text=get_text("upload_proof", lang), parse_mode="Markdown")
+        await context.bot.send_message(chat_id=user_id, text=get_text("upload_proof", lang), parse_mode=None)
     
     elif data == "back":
         await query.edit_message_text(get_text("main_menu", lang), reply_markup=main_menu_keyboard(lang))
