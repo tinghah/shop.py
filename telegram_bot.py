@@ -1,287 +1,421 @@
 #!/usr/bin/env python3
 """
-Telegram Business Bot - Training Courses
-Optimized Myanmar/English Language Support & Advanced Shop Logic
+Telegram Business Bot - Training Courses & Services
+SQLite Database + Admin Management
 """
 
 import os
 import json
+import sqlite3
 import logging
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 # === CONFIGURATION ===
-BOT_TOKEN = "8684412687:AAEp5ZRO6s1wSh0KmUP_GZa351HtNDmYJ4k"
+# Load from environment variables for security
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+if not BOT_TOKEN:
+    # Fallback to empty - bot won't work without env var
+    BOT_TOKEN = ""
+
 OWNER_ID = int(os.environ.get("OWNER_ID", "1909898183"))
+ACCOUNT_NUMBER = os.environ.get("ACCOUNT_NUMBER", "09786579514")
+ACCOUNT_NAME = os.environ.get("ACCOUNT_NAME", "Htet Aung Hlaing")
 
-# Bank Details (All available options)
-ACCOUNT_NUMBER = "09786579514"
-ACCOUNT_NAME = "Htet Aung Hlaing"
+# === DATABASE SETUP ===
+DB_FILE = "shop.db"
 
-# Products with descriptions
-PRODUCTS = {
-    "1": {
-        "name": "OpenClaw for Beginners", 
-        "name_mm": "OpenClaw အခြေခံသင်တန်း",
-        "price": 49,
-        "description": "Learn OpenClaw from scratch! This course covers:\n\n• Bot setup & configuration\n• Automation workflows\n• Integration with AI tools\n• Building your first agent\n\nDuration: 4 hours video + lifetime access",
-        "description_mm": "OpenClaw ကို အခြေခံမှစတင်လေ့လာမည်။ သင်ယူမည့်အရာများ -\n\n• Bot အသုံးပြုနည်း\n• Automation လုပ်ငန်းစဉ်များ\n• AI tools များနှင့် ချိတ်ဆက်ခြင်း\n• ကိုယ်ပိုင် Agent ဖန်တီးခြင်း\n\nကြာချိန် - ၄ နာရီ + တစ်သက်တာဝင်ရောက်ကြည့်ရှုခွင့်"
-    },
-    "2": {
-        "name": "NotebookLM Training", 
-        "name_mm": "NotebookLM အသုံးပြုနည်း",
-        "price": 39,
-        "description": "Master Google's NotebookLM!\n\n• Upload & analyze documents\n• Generate podcasts from notes\n• Create study guides\n• AI-powered research\n\nDuration: 3 hours",
-        "description_mm": "Google ၏ NotebookLM ကို ကျွမ်းကျင်စွာအသုံးပြုမည်။\n\n• စာရွက်စာတမ်းများထည့်သွင်းခြင်းနှင့် လေ့လာခြင်း\n• မှတ်စုများမှ Podcast ဖန်တီးခြင်း\n• Study guides များဖန်တီးခြင်း\n• AI အကူအညီဖြင့် သုတေသနပြုခြင်း\n\nကြာချိန် - ၃ နာရီ"
-    },
-    "3": {
-        "name": "AI Tools Mastery", 
-        "name_mm": "AI Tools ကျွမ်းကျင်မှု",
-        "price": 79,
-        "description": "Complete guide to AI tools:\n\n• ChatGPT, Claude, Gemini\n• Image generation (Midjourney, DALL-E)\n• Video & audio AI tools\n• Prompt engineering\n\nDuration: 8 hours",
-        "description_mm": "AI Tools များကို လက်တွေ့အသုံးပြုနည်း လမ်းညွှန် -\n\n• ChatGPT, Claude, Gemini\n• ပုံဖန်တီးခြင်း (Midjourney, DALL-E)\n• Video နှင့် Audio AI tools များ\n• Prompt ရေးသားနည်း\n\nကြာချိန် - ၈ နာရီ"
-    },
-    "4": {
-        "name": "Python for Automation", 
-        "name_mm": "Python အော်တိုမေးရှင်း",
-        "price": 59,
-        "description": "Automate your work with Python:\n\n• Python basics\n• File automation\n• Web scraping\n• API integrations\n• Building bots\n\nDuration: 6 hours",
-        "description_mm": "Python ဖြင့် လုပ်ငန်းများကို အလိုအလျောက်လုပ်ဆောင်မည် -\n\n• Python အခြေခံ\n• File များ စီမံခြင်း\n• Web scraping\n• API ချိတ်ဆက်ခြင်း\n• Bot များဖန်တီးခြင်း\n\nကြာချိန် - ၆ နာရီ"
-    },
-    "5": {
-        "name": "Telegram Bot Building", 
-        "name_mm": "Telegram Bot ရေးသားနည်း",
-        "price": 69,
-        "description": "Create powerful Telegram bots:\n\n• BotFather setup\n• Inline keyboards\n• Payments integration\n• User management\n• Deploy to server\n\nDuration: 5 hours",
-        "description_mm": "အဆင့်မြင့် Telegram Bot များ ဖန်တီးမည် -\n\n• BotFather အသုံးပြုနည်း\n• Inline keyboards များ\n• ငွေပေးချေမှု ချိတ်ဆက်ခြင်း\n• User များကို စီမံခြင်း\n• Server ပေါ်တင်ခြင်း (Deploy)\n\nကြာချိန် - ၅ နာရီ"
-    },
-}
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    
+    # Items table (courses + services)
+    c.execute('''CREATE TABLE IF NOT EXISTS items (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        name_mm TEXT,
+        price TEXT NOT NULL,
+        type TEXT NOT NULL,
+        description TEXT,
+        description_mm TEXT,
+        is_active INTEGER DEFAULT 1
+    )''')
+    
+    # Orders table
+    c.execute('''CREATE TABLE IF NOT EXISTS orders (
+        id TEXT PRIMARY KEY,
+        user_id TEXT,
+        username TEXT,
+        name TEXT,
+        item_id TEXT,
+        item_name TEXT,
+        price TEXT,
+        status TEXT DEFAULT 'pending',
+        payment_proof TEXT,
+        created TEXT
+    )''')
+    
+    conn.commit()
+    
+    # Insert default items if empty
+    c.execute("SELECT COUNT(*) FROM items")
+    if c.fetchone()[0] == 0:
+        default_items = [
+            ("1", "OpenClaw for Beginners", "OpenClaw အခြေခံသင်တန်း", "90,000", "course",
+             "Learn OpenClaw from scratch!\n\n• Bot setup\n• Automation\n• AI tools\n• Building agents\n\nDuration: 4 hours + lifetime access",
+             "OpenClaw ကို အခြေခံမှစတင်လေ့လာမည်။\n\nကြာချိန် - ၄ နာရီ + တစ်သက်တာဝင်ရောက်ကြည့်ရှုခွင့်"),
+            ("2", "NotebookLM Training", "NotebookLM အသုံးပြုနည်း", "75,000", "course",
+             "Master Google's NotebookLM!\n\n• Upload & analyze\n• Generate podcasts\n• Study guides\n\nDuration: 3 hours",
+             "Google ၏ NotebookLM ကို ကျွမ်းကျင်စွာအသုံးပြုမည်။\n\nကြာချိန် - ၃ နာရီ"),
+            ("s1", "Custom Telegram Bot Development", "Telegram Bot ရေးသားပေးခြင်း ဝန်ဆောင်မှု", "150,000", "service",
+             "Get a custom Telegram bot:\n\n• Auto-replies\n• Payment integration\n• User management\n• 1 month free hosting",
+             "သင့်လုပ်ငန်းအတွက် Telegram Bot ရေးသားပေးမည်။\n\n• အလိုအလျောက်စာပြန်စနစ်\n• ငွေပေးချေမှု\n• User စီမံခြင်း\n• ၁ လ အခမဲ့ Server"),
+            ("s2", "AI Workflow Setup", "AI လုပ်ငန်းစဉ်များ ချိတ်ဆက်ပေးခြင်း", "200,000", "service",
+             "Automate with AI:\n\n• Customer support AI\n• Document summarization\n• Content generation\n• OpenClaw setup",
+             "AI ဖြင့် လုပ်ငန်းကို အော်တိုမေးရှင်း ပြုလုပ်ပေးမည်။\n\n• Customer စာပြန်ပေးမည့် AI\n• စာရွက်အကျဉ်းချုပ်\n• Content ရေးသားပေးခြင်း"),
+        ]
+        c.executemany("INSERT INTO items VALUES (?,?,?,?,?,?,?,1)", default_items)
+        conn.commit()
+    
+    conn.close()
 
-# Language texts
+def get_items(item_type=None, active_only=True):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    if item_type:
+        if active_only:
+            c.execute("SELECT * FROM items WHERE type=? AND is_active=1", (item_type,))
+        else:
+            c.execute("SELECT * FROM items WHERE type=?", (item_type,))
+    else:
+        if active_only:
+            c.execute("SELECT * FROM items WHERE is_active=1")
+        else:
+            c.execute("SELECT * FROM items")
+    items = {row[0]: {"id": row[0], "name": row[1], "name_mm": row[2], "price": row[3], 
+                      "type": row[4], "description": row[5], "description_mm": row[6], "is_active": row[7]} 
+                     for row in c.fetchall()}
+    conn.close()
+    return items
+
+def add_item(item_id, name, name_mm, price, item_type, description, description_mm):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO items VALUES (?,?,?,?,?,?,?,1)",
+               (item_id, name, name_mm, price, item_type, description, description_mm))
+    conn.commit()
+    conn.close()
+
+def delete_item(item_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("UPDATE items SET is_active=0 WHERE id=?", (item_id,))
+    conn.commit()
+    conn.close()
+
+def get_all_items():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT * FROM items ORDER BY type, id")
+    items = {}
+    for row in c.fetchall():
+        items[row[0]] = {"id": row[0], "name": row[1], "name_mm": row[2], "price": row[3], 
+                        "type": row[4], "description": row[5], "description_mm": row[6], "is_active": row[7]}
+    conn.close()
+    return items
+
+# === ORDER FUNCTIONS ===
+def load_orders():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT * FROM orders")
+    orders = {row[0]: dict(zip(["id", "user_id", "username", "name", "item_id", "item_name", "price", "status", "payment_proof", "created"], row)) 
+             for row in c.fetchall()}
+    conn.close()
+    return orders
+
+def save_order(order):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO orders VALUES (?,?,?,?,?,?,?,?,?,?)",
+               (order["id"], order["user_id"], order["username"], order["name"], order["item_id"],
+                order["item_name"], order["price"], order["status"], order.get("payment_proof", ""), order["created"]))
+    conn.commit()
+    conn.close()
+
+def update_order_status(order_id, status):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("UPDATE orders SET status=? WHERE id=?", (status, order_id))
+    conn.commit()
+    conn.close()
+
+# === LANGUAGE TEXTS ===
 TEXTS = {
     "en": {
-        "welcome": "👋 Welcome!\n\nI'm your training course assistant.\n\nUse the menu below to browse and purchase courses.",
+        "welcome": "👋 Welcome!\n\nI'm your assistant.\n\nUse the menu below to browse courses and services.",
         "main_menu": "📋 *Main Menu*\n\nChoose an option:",
-        "products": "📦 *Product Catalog*\n\nSelect a course to see details:",
-        "help": "📖 *Help*\n\n• /start - Show menu\n• Browse products and tap to see details\n• Tap 'Buy Now' to get payment info\n• Upload screenshot after payment\n• I'll notify the owner after payment",
-        "my_cart": "🛒 *Your Cart*",
-        "cart_empty": "🛒 Your cart is empty.",
-        "total": "*Total: ${}*",
-        "confirm_order": "✅ *Order Confirmed!*\n\n{}\n\n*Total: ${}*\n\nPlease proceed to Payment section.",
-        "payment_details": "💳 *Payment Details*\n\nTransfer to any of these banks:\n\n🏦 *KBZ Pay* - အောက်ပါအကောင့်သို့\n💳 *Wave Pay* - အောက်ပါအကောင့်သို့\n🏦 *AYA Pay* - အောက်ပါအကောင့်သို့\n💳 *A+ Wallet* - အောက်ပါအကောင့်သို့\n\n━━━━━━━━━━━━━\n\n💳 Account: `{}`\n👤 Name: {}\n\nPlease transfer and upload payment proof.",
+        "products": "📦 *Courses*\n\nSelect a course to see details:",
+        "services": "🛠 *Services*\n\nSelect a service to see details:",
+        "help": "📖 *Help*\n\n• /start - Menu\n• Browse courses/services\n• Buy Now → Payment\n• Upload screenshot after payment",
+        "payment_details": "💳 *Payment Details*\n\nTransfer to:\n\n🏦 KBZ Pay\n💳 Wave Pay\n🏦 AYA Pay\n💳 A+ Wallet\n\n━━━━━━━━━━━━━\n\n💳 Account: `{}`\n👤 Name: {}\n\nTransfer and upload proof.",
         "buy_now": "🛒 *Buy Now*",
-        "added_to_cart": "✅ *Added to Cart!*\n\n📚 {}\n💰 Price: ${}\n\n━━━━━━━━━━━━━\n\n💳 *Payment Details*\n\n🏦 KBZ Pay | 💳 Wave Pay | 🏦 AYA Pay | 💳 A+ Wallet\n\nAccount: `{}`\nName: {}\n\nPlease transfer *${}* and upload your payment screenshot.",
-        "upload_proof": "📤 *Upload Payment Proof*\n\nPlease send me a screenshot or photo of your payment transaction.",
-        "payment_submitted": "✅ *Payment Proof Submitted!*\n\nOrder ID: `{}`\nProduct: {}\nAmount: ${}\n\nThank you! The owner will verify your payment and send course access details.",
-        "no_pending": "❌ No pending order. Please buy a product first.",
-        "no_image": "❌ No image received. Please upload your payment screenshot.",
-        "order_confirmed": "✅ Order Confirmed!\n\nYour order has been submitted.",
-        "cart_cleared": "🛒 Cart cleared.",
+        "added_to_cart": "✅ *Selected!*\n\n📚 {}\n💰 Price: {} MMK\n\n💳 Account: `{}`\n👤 Name: {}\n\nTransfer *{} MMK* and upload screenshot.",
+        "upload_proof": "📤 Upload Payment Proof\n\nSend your payment screenshot.",
+        "payment_submitted": "✅ *Payment Submitted!*\n\nOrder ID: `{}`\nItem: {}\nAmount: {} MMK\n\nOwner will verify soon.",
+        "no_pending": "❌ No pending order. Please select an item first.",
+        "no_image": "❌ No image. Please upload screenshot.",
         "back": "🔙 Back",
-        "confirm": "✅ Confirm & Pay",
-        "clear": "❌ Clear Cart",
-        "upload_btn": "📤 Upload Payment Proof",
+        "upload_btn": "📤 Upload Proof",
         "help_btn": "❓ Help",
-        "products_btn": "📦 Products",
+        "products_btn": "📦 Courses",
+        "services_btn": "🛠 Services",
         "myorder_btn": "🛒 My Orders",
-        "payment_btn": "💳 Payment Info",
-        "lang_btn": "🌐 မြန်မာစာ",
+        "payment_btn": "💳 Payment",
+        "lang_btn": "🌐 မြန်မာ",
     },
     "mm": {
-        "welcome": "👋 မင်္ဂလာပါ။\n\nသင်တန်းများနှင့်ပတ်သက်ပြီး ကူညီပေးမည့် Bot ဖြစ်ပါသည်။\n\nသင်တန်းများ ဝယ်ယူရန် အောက်ပါမီနူးကို အသုံးပြုပါ။",
-        "main_menu": "📋 *ပင်မမီနူး*\n\nရွေးချယ်ပါ:",
-        "products": "📦 *သင်တန်းများ*\n\nအသေးစိတ်သိရှိရန် သင်တန်းကို နှိပ်ပါ:",
-        "help": "📖 *အကူအညီ*\n\n• /start - မီနူးပြရန်\n• သင်တန်းများကို လေ့လာပြီး အသေးစိတ်ကို ဖတ်ရန်\n• ၀ယ်ယူလိုပါက 'ဝယ်ယူမည်' ကိုနှိပ်ပြီး ငွေချေရန်အချက်အလက်များကို ကြည့်ပါ\n• ငွေပေးချေပြီးပါက Screenshot ဖြင့် ငွေလွှဲပြေစာ ပေးပို့ပါ\n• အက်ဒမင်မှ စစ်ဆေးပြီး အတည်ပြုပေးပါမည်",
-        "my_cart": "🛒 *သင်၏ စျေးဝယ်ခြင်းတောင်း*",
-        "cart_empty": "🛒 ခြင်းတောင်းထဲတွင် ဘာမှမရှိပါ။",
-        "total": "*စုစုပေါင်း: ${}*",
-        "confirm_order": "✅ *မှာယူမှု အတည်ပြုပြီးပါပြီ*\n\n{}\n\n*စုစုပေါင်း: ${}*\n\nငွေပေးချေရန် ဆက်လက်လုပ်ဆောင်ပါ။",
-        "payment_details": "💳 *ငွေပေးချေရန် အချက်အလက်များ*\n\nအောက်ပါ ဘဏ်များသို့ ငွေလွှဲနိုင်ပါသည်။\n\n🏦 *KBZ Pay*\n💳 *Wave Pay*\n🏦 *AYA Pay*\n💳 *A+ Wallet*\n\n━━━━━━━━━━━━━\n\n💳 အကောင့်: `{}`\n👤 အမည်: {}\n\nငွေလွှဲပြီးပါက ပြေစာ (Screenshot) ကို ဤ Chat တွင် ပေးပို့ပါ။",
-        "buy_now": "🛒 *ယခု ဝယ်မည်*",
-        "added_to_cart": "✅ *ခြင်းတောင်းထဲသို့ ထည့်ပြီးပါပြီ*\n\n📚 {}\n💰 ဈေးနှုန်း: ${}\n\n━━━━━━━━━━━━━\n\n💳 *ငွေပေးချေရန် အချက်အလက်များ*\n\n🏦 KBZ Pay | 💳 Wave Pay | 🏦 AYA Pay | 💳 A+ Wallet\n\nအကောင့်: `{}`\nအမည်: {}\n\nကျေးဇူးပြု၍ *${}* ကိုလွှဲပေးပြီး ငွေလွှဲပြေစာ (Screenshot) ပေးပို့ပါ။",
-        "upload_proof": "📤 *ငွေလွှဲပြေစာ ပေးပို့ရန်*\n\nသင်၏ ငွေလွှဲထားသော Screenshot (သို့) ဓာတ်ပုံကို ဤနေရာတွင် ပေးပို့ပါ။",
-        "payment_submitted": "✅ *ပြေစာ လက်ခံရရှိပါပြီ*\n\nOrder ID: `{}`\nသင်တန်း: {}\nပမာဏ: ${}\n\nကျေးဇူးတင်ပါသည်။ အက်ဒမင်မှ ငွေလွှဲမှတ်တမ်းကို စစ်ဆေးပြီး သင်တန်းဝင်ခွင့် ပေးပို့ပါမည်။",
-        "no_pending": "❌ ဝယ်ယူထားခြင်း မရှိသေးပါ။ ကျေးဇူးပြု၍ သင်တန်းအရင်ရွေးချယ်ပါ။",
-        "no_image": "❌ ပုံမတွေ့ရပါ။ ငွေလွှဲပြေစာ Screenshot ကို Upload လုပ်ပေးပါ။",
-        "order_confirmed": "✅ အော်ဒါ တင်ပြီးပါပြီ။",
-        "cart_cleared": "🛒 ခြင်းတောင်း ရှင်းလင်းပြီးပါပြီ။",
+        "welcome": "👋 မင်္ဂလာပါ။\n\nသင်တန်းများနှင့် ဝန်ဆောင်မှုများအတွက် ကူညီပေးမည့် Bot ဖြစ်ပါသည်။",
+        "main_menu": "📋 *ပင်မမီနူး*",
+        "products": "📦 *သင်တန်းများ*",
+        "services": "🛠 *ဝန်ဆောင်မှုများ*",
+        "help": "📖 *အကူအညီ*\n\n• /start - မီနူး\n• သင်တန်း/ဝန်ဆောင်မှု ရွေးချယ်ပါ\n• ဝယ်ယူ → ငွေချေ\n• Screenshot ပါးလိုက်ပါ",
+        "payment_details": "💳 *ငွေပေးချေရန်*\n\n🏦 KBZ Pay\n💳 Wave Pay\n🏦 AYA Pay\n💳 A+ Wallet\n\n━━━━━━━━━━━━━\n\n💳 အကောင့်: `{}`\n👤 အမည်: {}\n\nငွေလွှဲပြီး Screenshot ပါးလိုက်ပါ။",
+        "buy_now": "🛒 *ဝယ်မည်*",
+        "added_to_cart": "✅ *ရွေးပြီးပါပြီ*\n\n📚 {}\n💰 ဈေး: {} MMK\n\n💳 အကောင့်: `{}`\n👤 အမည်: {}\n\n{} MMK လွှဲပြီး Screenshot ပါးလိုက်ပါ။",
+        "upload_proof": "📤 ငွေလွှဲပြေစာ ပါးလိုက်ရန်",
+        "payment_submitted": "✅ *ပြေစာ လက်ခံရရှိပါပြီ*\n\nOrder ID: `{}`\nဝယ်ယူမှု: {}\nပမာဏ: {} MMK\n\nအက်ဒမင်မှ စစ်ဆေးပါမည်။",
+        "no_pending": "❌ ဝယ်ယူထားခြင်း မရှိသေးပါ။",
+        "no_image": "❌ ပုံမတွေ့ပါ။ Screenshot ပါးလိုက်ပါ။",
         "back": "🔙 နောက်သို့",
-        "confirm": "✅ အတည်ပြုပြီး ငွေချေမည်",
-        "clear": "❌ ခြင်းတောင်း ရှင်းမည်",
-        "upload_btn": "📤 ငွေလွှဲပြေစာ ပေးပို့ရန်",
+        "upload_btn": "📤 ပြေစာ",
         "help_btn": "❓ အကူအညီ",
         "products_btn": "📦 သင်တန်းများ",
-        "myorder_btn": "🛒 ကျွန်ုပ်၏ အော်ဒါများ",
-        "payment_btn": "💳 ငွေပေးချေရန်",
+        "services_btn": "🛠 ဝန်ဆောင်မှုများ",
+        "myorder_btn": "🛒 ကျွန်ုပ်၏ အော်ဒါ",
+        "payment_btn": "💳 ငွေပေးချေ",
         "lang_btn": "🌐 English",
     }
 }
-
-# === DATA STORAGE ===
-ORDERS_FILE = "orders.json"
-
-def load_orders():
-    if os.path.exists(ORDERS_FILE):
-        try:
-            with open(ORDERS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
-
-def save_orders(orders):
-    with open(ORDERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(orders, f, indent=2, ensure_ascii=False)
 
 def get_text(key, lang="en"):
     return TEXTS.get(lang, TEXTS["en"]).get(key, key)
 
 # === KEYBOARDS ===
 def main_menu_keyboard(lang="en"):
-    keyboard = [
-        [InlineKeyboardButton(get_text("products_btn", lang), callback_data="products")],
-        [InlineKeyboardButton(get_text("myorder_btn", lang), callback_data="my_order")],
-        [InlineKeyboardButton(get_text("payment_btn", lang), callback_data="payment")],
-        [InlineKeyboardButton(get_text("help_btn", lang), callback_data="help")],
-        [InlineKeyboardButton(get_text("lang_btn", lang), callback_data="switch_lang")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(get_text("products_btn", lang), callback_data="products"),
+         InlineKeyboardButton(get_text("services_btn", lang), callback_data="services")],
+        [InlineKeyboardButton(get_text("myorder_btn", lang), callback_data="my_order"),
+         InlineKeyboardButton(get_text("payment_btn", lang), callback_data="payment")],
+        [InlineKeyboardButton(get_text("help_btn", lang), callback_data="help"),
+         InlineKeyboardButton(get_text("lang_btn", lang), callback_data="switch_lang")]
+    ])
 
-def products_keyboard(lang="en"):
+def items_keyboard(items_dict, prefix, lang="en"):
     keyboard = []
-    for pid, p in PRODUCTS.items():
-        name = p.get(f"name_mm", p["name"]) if lang == "mm" else p["name"]
-        keyboard.append([InlineKeyboardButton(f"📚 {name}", callback_data=f"product_{pid}")])
+    for iid, item in items_dict.items():
+        name = item.get("name_mm", item["name"]) if lang == "mm" else item["name"]
+        icon = "📚" if item["type"] == "course" else "🛠"
+        keyboard.append([InlineKeyboardButton(f"{icon} {name}", callback_data=f"{prefix}{iid}")])
     keyboard.append([InlineKeyboardButton(get_text("back", lang), callback_data="back")])
     return InlineKeyboardMarkup(keyboard)
 
-def product_detail_keyboard(product_id, lang="en"):
-    keyboard = [
-        [InlineKeyboardButton(get_text("buy_now", lang), callback_data=f"buy_{product_id}")],
-        [InlineKeyboardButton(get_text("back", lang), callback_data="products")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def cart_keyboard(lang="en"):
-    keyboard = [
-        [InlineKeyboardButton(get_text("confirm", lang), callback_data="confirm_order")],
-        [InlineKeyboardButton(get_text("clear", lang), callback_data="clear_cart")],
-        [InlineKeyboardButton(get_text("back", lang), callback_data="back")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
+def item_detail_keyboard(item_id, back_target, lang="en"):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(get_text("buy_now", lang), callback_data=f"buy_{item_id}")],
+        [InlineKeyboardButton(get_text("back", lang), callback_data=back_target)]
+    ])
 
 def payment_keyboard(lang="en"):
-    keyboard = [
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton(get_text("upload_btn", lang), callback_data="upload_proof")],
-        [InlineKeyboardButton(get_text("back", lang), callback_data="back")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
+        [InlineKeyboardButton(get_text("back", lang), callback_data="back")]
+    ])
 
-# === ADMIN COMMANDS ===
+# === ADMIN HANDLERS ===
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id != OWNER_ID:
+    if update.effective_user.id != OWNER_ID:
         return
     
+    items = get_all_items()
+    courses = {k:v for k,v in items.items() if v["type"] == "course" and v["is_active"]}
+    services = {k:v for k,v in items.items() if v["type"] == "service" and v["is_active"]}
     orders = load_orders()
-    pending = {k: v for k, v in orders.items() if v.get("status") == "pending_verification"}
+    pending = len([o for o in orders.values() if o["status"] == "pending"])
     
-    msg = f"👨‍💻 *Admin Dashboard*\n\nTotal Orders: {len(orders)}\nPending Approvals: {len(pending)}\n\n"
-    msg += "To approve an order, use: `/approve <order_id>`\n"
-    msg += "To view pending orders, use: `/pending`\n"
+    msg = f"👨‍💻 *Admin Panel*\n\n"
+    msg += f"📦 Courses: {len(courses)}\n"
+    msg += f"🛠 Services: {len(services)}\n"
+    msg += f"📋 Pending Orders: {pending}\n\n"
+    msg += "*Commands:*\n"
+    msg += "/admin add_course - Add new course\n"
+    msg += "/admin add_service - Add new service\n"
+    msg += "/admin list - List all items\n"
+    msg += "/admin delete <id> - Delete item\n"
+    msg += "/pending - View pending orders\n"
+    msg += "/approve <order_id> - Approve order"
     
     await update.message.reply_text(msg, parse_mode="Markdown")
 
+async def admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return
+    
+    items = get_all_all = get_all_items()
+    msg = "📋 *All Items:*\n\n"
+    
+    msg += "📦 *Courses:*\n"
+    for iid, item in all_items.items():
+        if item["type"] == "course":
+            status = "✅" if item["is_active"] else "❌"
+            msg += f"{status} `{iid}` - {item['name']} ({item['price']} MMK)\n"
+    
+    msg += "\n🛠 *Services:*\n"
+    for iid, item in all_items.items():
+        if item["type"] == "service":
+            status = "✅" if item["is_active"] else "❌"
+            msg += f"{status} `{iid}` - {item['name']} ({item['price']} MMK)\n"
+    
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def admin_add_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return
+    
+    await update.message.reply_text(
+        "📦 *Add New Course*\n\n"
+        "Send in this format:\n"
+        "`id|name|name_mm|price|description|description_mm`\n\n"
+        "Example:\n"
+        "`3|New Course|သင်တန်းအသစ်|50,000|Course desc|သင်တန်းအသစ်အောက်မှာ`",
+        parse_mode="Markdown"
+    )
+    return "awaiting_course"
+
+async def admin_add_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return
+    
+    await update.message.reply_text(
+        "🛠 *Add New Service*\n\n"
+        "Send in this format:\n"
+        "`id|name|name_mm|price|description|description_mm`\n\n"
+        "Example:\n"
+        "`s3|Web Dev|ဝက်ဘ်ဖန်တီးခြင်း|100,000|We build websites|ဝက်ဘ်ဆိုဒ်များဖန်တီးပါးစပါး`",
+        parse_mode="Markdown"
+    )
+    return "awaiting_service"
+
+async def admin_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Usage: `/admin delete <id>`", parse_mode="Markdown")
+        return
+    
+    item_id = context.args[0]
+    delete_item(item_id)
+    await update.message.reply_text(f"✅ Item `{item_id}` deleted!", parse_mode="Markdown")
+
 async def admin_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id != OWNER_ID:
+    if update.effective_user.id != OWNER_ID:
         return
     
     orders = load_orders()
-    pending = {k: v for k, v in orders.items() if v.get("status") == "pending_verification"}
+    pending = {k:v for k,v in orders.items() if v["status"] == "pending"}
     
     if not pending:
         await update.message.reply_text("✅ No pending orders!")
         return
-        
+    
     msg = "⏳ *Pending Orders:*\n\n"
     for oid, o in pending.items():
-        msg += f"ID: `{oid}`\nUser: {o.get('name')} (@{o.get('username')})\nItem: {o.get('product_name')}\nAmount: ${o.get('price')}\n---\n"
-        
+        msg += f"ID: `{oid}`\nUser: {o['name']} (@{o['username']})\nItem: {o['item_name']}\nAmount: {o['price']} MMK\n---\n"
+    
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id != OWNER_ID:
+    if update.effective_user.id != OWNER_ID:
         return
-        
+    
     if not context.args:
         await update.message.reply_text("Usage: `/approve <order_id>`", parse_mode="Markdown")
         return
-        
+    
     order_id = context.args[0]
     orders = load_orders()
     
     if order_id not in orders:
         await update.message.reply_text(f"❌ Order `{order_id}` not found.", parse_mode="Markdown")
         return
-        
-    if orders[order_id]["status"] == "paid":
-        await update.message.reply_text(f"⚠️ Order `{order_id}` is already approved.", parse_mode="Markdown")
-        return
-        
-    orders[order_id]["status"] = "paid"
-    save_orders(orders)
     
-    # Notify User
+    update_order_status(order_id, "paid")
+    
     try:
         buyer_id = orders[order_id]["user_id"]
         lang = context.bot_data.get("user_lang", {}).get(buyer_id, "mm")
         
-        if lang == "mm":
-            notify_msg = f"🎉 *ဂုဏ်ယူပါသည်! သင့်ငွေပေးချေမှုကို အတည်ပြုပြီးပါပြီ။*\n\nသင်တန်း: {orders[order_id]['product_name']}\nOrder ID: `{order_id}`\n\nသင်တန်းလင့်ခ်ကို မကြာမီ ပေးပို့ပါမည်။"
-        else:
-            notify_msg = f"🎉 *Payment Approved!*\n\nCourse: {orders[order_id]['product_name']}\nOrder ID: `{order_id}`\n\nYour course access details will be sent soon."
-            
+        notify_msg = "🎉 *အတည်ပြုပါပြီ!*\n\nသင့်ငွေလွှဲကို ရရှိပြီး အတည်ပြုပါပြီ။" if lang == "mm" else "🎉 *Payment Approved!*\n\nYour order is confirmed."
+        
         await context.bot.send_message(chat_id=buyer_id, text=notify_msg, parse_mode="Markdown")
-        await update.message.reply_text(f"✅ Order `{order_id}` approved and user notified.", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Order `{order_id}` approved!", parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"✅ Order approved, but couldn't notify user: {e}")
+        await update.message.reply_text(f"✅ Approved but couldn't notify: {e}")
+
+# === MESSAGE HANDLER FOR ADDING ITEMS ===
+async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # This is a simplified version - in production use conversation states
+    pass
 
 # === GENERAL HANDLERS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
-    # Give priority to MM lang
     if "user_lang" not in context.bot_data:
         context.bot_data["user_lang"] = {}
     if user_id not in context.bot_data["user_lang"]:
-         context.bot_data["user_lang"][user_id] = "mm"
-         
+        context.bot_data["user_lang"][user_id] = "mm"
+    
     lang = context.bot_data["user_lang"][user_id]
-    
-    await update.message.reply_text(
-        get_text("welcome", lang),
-        reply_markup=main_menu_keyboard(lang)
-    )
+    await update.message.reply_text(get_text("welcome", lang), reply_markup=main_menu_keyboard(lang))
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     lang = context.bot_data.get("user_lang", {}).get(user_id, "mm")
     
-    await update.message.reply_text(
-        get_text("help", lang),
-        reply_markup=main_menu_keyboard(lang)
-    )
-
-async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
-    lang = context.bot_data.get("user_lang", {}).get(user_id, "mm")
+    photo = update.message.photo[-1] if update.message.photo else None
+    if not photo:
+        await update.message.reply_text(get_text("no_image", lang))
+        return
     
-    await update.message.reply_text(
-        get_text("main_menu", lang),
-        reply_markup=main_menu_keyboard(lang)
-    )
+    pending = context.bot_data.get("pending_payment", {}).get(user_id)
+    if not pending:
+        await update.message.reply_text(get_text("no_pending", lang))
+        return
+    
+    order_id = datetime.now().strftime("%y%m%d%H%M") + str(update.message.from_user.id)[-3:]
+    
+    order = {
+        "id": order_id, "user_id": user_id,
+        "username": update.message.from_user.username or "N/A",
+        "name": update.message.from_user.first_name or "N/A",
+        "item_id": pending["item_id"], "item_name": pending["name"],
+        "price": pending["price"], "status": "pending",
+        "payment_proof": f"photo:{photo.file_id}", "created": datetime.now().isoformat()
+    }
+    save_order(order)
+    
+    caption = f"🆕 *New Payment!*\n\nOrder: `{order_id}`\nUser: {update.message.from_user.first_name}\nItem: {pending['name']}\nAmount: {pending['price']} MMK\n\n/approve {order_id}"
+    
+    try:
+        await context.bot.send_photo(OWNER_ID, photo.file_id, caption=caption, parse_mode="Markdown")
+    except:
+        await context.bot.send_message(OWNER_ID, caption, parse_mode="Markdown")
+    
+    context.bot_data.get("pending_payment", {}).pop(user_id, None)
+    await update.message.reply_text(get_text("payment_submitted", lang).format(order_id, pending["name"], pending["price"]), parse_mode="Markdown")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -289,64 +423,48 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = str(query.from_user.id)
     data = query.data
+    lang = context.bot_data.setdefault("user_lang", {}).setdefault(user_id, "mm")
     
-    # Get user language
-    if "user_lang" not in context.bot_data:
-        context.bot_data["user_lang"] = {}
-    lang = context.bot_data["user_lang"].get(user_id, "mm")
-    
-    # Initialize user cart
-    if "carts" not in context.bot_data:
-        context.bot_data["carts"] = {}
-    if user_id not in context.bot_data["carts"]:
-        context.bot_data["carts"][user_id] = []
-    
-    cart = context.bot_data["carts"][user_id]
-    
-    # Switch language
     if data == "switch_lang":
-        new_lang = "en" if lang == "mm" else "mm"
-        context.bot_data["user_lang"][user_id] = new_lang
-        lang = new_lang
-        await query.edit_message_text(
-            get_text("main_menu", lang),
-            reply_markup=main_menu_keyboard(lang)
-        )
+        lang = "en" if lang == "mm" else "mm"
+        context.bot_data["user_lang"][user_id] = lang
+        await query.edit_message_text(get_text("main_menu", lang), reply_markup=main_menu_keyboard(lang))
         return
     
-    if data == "products":
-        text = get_text("products", lang)
-        await query.edit_message_text(text, reply_markup=products_keyboard(lang))
+    PRODUCTS = get_items("course")
+    SERVICES = get_items("service")
     
-    elif data.startswith("product_"):
-        pid = data.replace("product_", "")
-        if pid in PRODUCTS:
-            p = PRODUCTS[pid]
-            name = p.get(f"name_{lang}", p["name"]) if lang == "mm" else p["name"]
-            desc = p.get(f"description_{lang}", p["description"]) if lang == "mm" else p["description"]
-            
+    if data == "products":
+        await query.edit_message_text(get_text("products", lang), reply_markup=items_keyboard(PRODUCTS, "p_", lang))
+    elif data == "services":
+        await query.edit_message_text(get_text("services", lang), reply_markup=items_keyboard(SERVICES, "s_", lang))
+    
+    elif data.startswith("p_") or data.startswith("s_"):
+        is_service = data.startswith("s_")
+        iid = data[2:]
+        collection = SERVICES if is_service else PRODUCTS
+        back = "services" if is_service else "products"
+        
+        if iid in collection:
+            item = collection[iid]
+            name = item.get("name_mm", item["name"]) if lang == "mm" else item["name"]
+            desc = item.get("description_mm", item["description"]) if lang == "mm" else item["description"]
+            icon = "🛠" if is_service else "📚"
             price_label = "စျေးနှုန်း" if lang == "mm" else "Price"
-            text = f"📚 *{name}*\n\n{desc}\n\n💰 *{price_label}: ${p['price']}*"
-            await query.edit_message_text(text, reply_markup=product_detail_keyboard(pid, lang), parse_mode="Markdown")
+            text = f"{icon} *{name}*\n\n{desc}\n\n💰 *{price_label}: {item['price']} MMK*"
+            await query.edit_message_text(text, reply_markup=item_detail_keyboard(data, back, lang), parse_mode="Markdown")
     
     elif data.startswith("buy_"):
-        pid = data.replace("buy_", "")
-        if pid in PRODUCTS:
-            p = PRODUCTS[pid]
-            # Clear previous cart and only keep current item for simplified checkout
-            context.bot_data["carts"][user_id] = [pid]
-            cart = context.bot_data["carts"][user_id]
-            
-            name = p.get(f"name_{lang}", p["name"]) if lang == "mm" else p["name"]
-            
-            text = get_text("added_to_cart", lang).format(
-                name, p['price'], ACCOUNT_NUMBER, ACCOUNT_NAME, p['price']
-            )
-            
-            if "pending_payment" not in context.bot_data:
-                context.bot_data["pending_payment"] = {}
-            context.bot_data["pending_payment"][user_id] = {"product_id": pid, "price": p['price'], "name": name}
-            
+        raw_id = data[4:]
+        iid = raw_id[2:]
+        is_service = raw_id.startswith("s")
+        collection = SERVICES if is_service else PRODUCTS
+        
+        if iid in collection:
+            item = collection[iid]
+            name = item.get("name_mm", item["name"]) if lang == "mm" else item["name"]
+            text = get_text("added_to_cart", lang).format(name, item['price'], ACCOUNT_NUMBER, ACCOUNT_NAME, item['price'])
+            context.bot_data.setdefault("pending_payment", {})[user_id] = {"item_id": raw_id, "price": item['price'], "name": name}
             await query.edit_message_text(text, reply_markup=payment_keyboard(lang), parse_mode="Markdown")
     
     elif data == "my_order":
@@ -354,139 +472,49 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_orders = [o for o in orders.values() if o["user_id"] == user_id]
         
         if not user_orders:
-            empty_msg = "📭 သင်ဝယ်ယူထားသည်များ မရှိသေးပါ။" if lang == "mm" else "📭 No orders yet."
-            await query.edit_message_text(empty_msg, reply_markup=main_menu_keyboard(lang))
+            msg = "📭 သင်ဝယ်ယူထားသည်များ မရှိသေးပါ။" if lang == "mm" else "📭 No orders yet."
         else:
-            title = "📋 *သင်၏ အော်ဒါမှတ်တမ်း:*\n\n" if lang == "mm" else "📋 *Your Orders:*\n\n"
-            text = title
-            for o in sorted(user_orders, key=lambda x: x["created"], reverse=True)[:5]:  # Show latest 5
-                status_emoji = "⏳" if o["status"] == "pending_verification" else "✅" if o["status"] == "paid" else "📦"
-                text += f"{status_emoji} Order `{o['created'][-6:]}` - {o['product_name']} - ${o['price']}\n"
-            
-            if len(user_orders) > 5:
-                text += "\n*(Showing latest 5 orders)*"
-                
-            # Add back button
-            markup = InlineKeyboardMarkup([[InlineKeyboardButton(get_text("back", lang), callback_data="back")]])
-            await query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+            msg = "📋 *Your Orders:*\n\n"
+            for o in sorted(user_orders, key=lambda x: x["created"], reverse=True)[:5]:
+                status = "⏳" if o["status"] == "pending" else "✅"
+                msg += f"{status} `{o['id'][-6:]}` - {o['item_name']} - {o['price']} MMK\n"
+        
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton(get_text("back", lang), callback_data="back")]])
+        await query.edit_message_text(msg, reply_markup=markup, parse_mode="Markdown")
     
     elif data == "payment":
         text = get_text("payment_details", lang).format(ACCOUNT_NUMBER, ACCOUNT_NAME)
         await query.edit_message_text(text, reply_markup=main_menu_keyboard(lang), parse_mode="Markdown")
     
     elif data == "help":
-        await query.edit_message_text(
-            get_text("help", lang),
-            reply_markup=main_menu_keyboard(lang)
-        )
+        await query.edit_message_text(get_text("help", lang), reply_markup=main_menu_keyboard(lang))
     
     elif data == "upload_proof":
         await query.answer()
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=get_text("upload_proof", lang),
-            parse_mode="Markdown"
-        )
+        await context.bot.send_message(chat_id=user_id, text=get_text("upload_proof", lang), parse_mode="Markdown")
     
     elif data == "back":
-        await query.edit_message_text(
-            get_text("main_menu", lang),
-            reply_markup=main_menu_keyboard(lang)
-        )
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
-    lang = context.bot_data.get("user_lang", {}).get(user_id, "mm")
-    
-    photo = update.message.photo[-1] if update.message.photo else None
-    
-    if not photo:
-        await update.message.reply_text(get_text("no_image", lang))
-        return
-    
-    pending = context.bot_data.get("pending_payment", {}).get(user_id)
-    
-    if not pending:
-        await update.message.reply_text(get_text("no_pending", lang))
-        return
-    
-    # Create order
-    orders = load_orders()
-    
-    # Generate cleaner short order ID
-    order_id = datetime.now().strftime("%y%m%d%H%M") + str(update.message.from_user.id)[-3:]
-    
-    orders[order_id] = {
-        "user_id": user_id,
-        "username": update.message.from_user.username or "N/A",
-        "name": update.message.from_user.first_name or "N/A",
-        "product_id": pending["product_id"],
-        "product_name": pending["name"],
-        "price": pending["price"],
-        "status": "pending_verification",
-        "payment_proof": f"photo_file_id:{photo.file_id}",
-        "created": datetime.now().isoformat()
-    }
-    save_orders(orders)
-    
-    # Send photo to owner
-    caption = (f"🆕 *New Payment Received!*\n\n"
-               f"Order ID: `{order_id}`\n"
-               f"User: [{update.message.from_user.first_name}](tg://user?id={user_id}) (@{update.message.from_user.username or 'N/A'})\n"
-               f"Product: {pending['name']}\n"
-               f"Amount: ${pending['price']}\n\n"
-               f"Status: ⏳ Waiting for verification\n\n"
-               f"👉 Reply with `/approve {order_id}` to confirm payment.")
-    
-    try:
-        await context.bot.send_photo(
-            OWNER_ID,
-            photo.file_id,
-            caption=caption,
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logging.error(f"Failed to send to admin: {e}")
-        try:
-             await context.bot.send_message(
-                 OWNER_ID,
-                 text=f"⚠️ Payment arrived but photo failed to forward.\n\nUser ID: {user_id}\nOrder ID: {order_id}\nError: {e}"
-             )
-        except Exception:
-             pass
-    
-    if "pending_payment" in context.bot_data:
-        context.bot_data["pending_payment"].pop(user_id, None)
-    
-    if "carts" in context.bot_data:
-        context.bot_data["carts"][user_id] = []
-    
-    await update.message.reply_text(
-        get_text("payment_submitted", lang).format(order_id, pending["name"], pending["price"]),
-        parse_mode="Markdown"
-    )
+        await query.edit_message_text(get_text("main_menu", lang), reply_markup=main_menu_keyboard(lang))
 
 # === MAIN ===
 def main():
+    init_db()
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     
     app = Application.builder().token(BOT_TOKEN).build()
     
-    # User Commands
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("menu", menu_command))
-    app.add_handler(CommandHandler("help", help_command))
-    
-    # Admin Commands
     app.add_handler(CommandHandler("admin", admin_panel))
+    app.add_handler(CommandHandler("admin_list", admin_list))
+    app.add_handler(CommandHandler("admin_add_course", admin_add_course))
+    app.add_handler(CommandHandler("admin_add_service", admin_add_service))
+    app.add_handler(CommandHandler("admin_delete", admin_delete))
     app.add_handler(CommandHandler("pending", admin_pending))
     app.add_handler(CommandHandler("approve", admin_approve))
-    
-    # Callbacks & Messages
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     
-    print("🤖 Superior Bot starting with full DB capabilities & Native Myanmar support...")
+    print("🤖 Bot (SQLite) starting with admin management...")
     app.run_polling()
 
 if __name__ == "__main__":
