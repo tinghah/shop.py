@@ -8,7 +8,7 @@ import os
 import json
 import sqlite3
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
@@ -282,7 +282,10 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "/admin list - List all items\n"
     msg += "/admin delete <id> - Delete item\n"
     msg += "/pending - View pending orders\n"
-    msg += "/approve <order_id> - Approve order"
+    msg += "/approve <order_id> - Approve order\n"
+    msg += "/admin_stats - Analytics overview\n"
+    msg += "/admin_revenue - Revenue report\n"
+    msg += "/admin_export - Export orders (30d)"
     
     await update.message.reply_text(msg, parse_mode=None)
 
@@ -391,6 +394,170 @@ async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Order `{order_id}` approved!", parse_mode=None)
     except Exception as e:
         await update.message.reply_text(f"✅ Approved but couldn't notify: {e}")
+
+# === ANALYTICS HANDLERS ===
+
+def parse_price(price_str):
+    return int(str(price_str).replace(",", "").replace(" ", ""))
+
+def fmt_number(n):
+    return f"{n:,}"
+
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return
+
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+
+    now = datetime.now()
+    d7 = (now - timedelta(days=7)).isoformat()
+    d30 = (now - timedelta(days=30)).isoformat()
+    month_start = now.strftime("%Y-%m-01")
+
+    c.execute("SELECT COUNT(*) FROM orders")
+    total_all = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM orders WHERE created >= ?", (d7,))
+    total_7d = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM orders WHERE created >= ?", (d30,))
+    total_30d = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM orders WHERE status = 'pending'")
+    pending = c.fetchone()[0]
+
+    c.execute("SELECT COALESCE(SUM(CAST(REPLACE(price, ',', '') AS INTEGER)), 0) FROM orders WHERE status = 'paid'")
+    rev_all = c.fetchone()[0]
+
+    c.execute("SELECT COALESCE(SUM(CAST(REPLACE(price, ',', '') AS INTEGER)), 0) FROM orders WHERE status = 'paid' AND created >= ?", (d7,))
+    rev_7d = c.fetchone()[0]
+
+    c.execute("SELECT COALESCE(SUM(CAST(REPLACE(price, ',', '') AS INTEGER)), 0) FROM orders WHERE status = 'paid' AND created >= ?", (d30,))
+    rev_30d = c.fetchone()[0]
+
+    c.execute("SELECT item_name, COUNT(*) as cnt FROM orders WHERE status = 'paid' GROUP BY item_name ORDER BY cnt DESC LIMIT 5")
+    top_items = c.fetchall()
+
+    c.execute("SELECT COUNT(DISTINCT user_id) FROM orders WHERE created >= ?", (month_start,))
+    new_customers = c.fetchone()[0]
+
+    conn.close()
+
+    msg = "📊 *Admin Statistics*\n\n"
+    msg += "📋 *Orders:*\n"
+    msg += f"  All time: {fmt_number(total_all)}\n"
+    msg += f"  Last 7 days: {fmt_number(total_7d)}\n"
+    msg += f"  Last 30 days: {fmt_number(total_30d)}\n"
+    msg += f"  Pending: {fmt_number(pending)}\n\n"
+    msg += "💰 *Revenue (paid):*\n"
+    msg += f"  All time: {fmt_number(rev_all)} MMK\n"
+    msg += f"  Last 7 days: {fmt_number(rev_7d)} MMK\n"
+    msg += f"  Last 30 days: {fmt_number(rev_30d)} MMK\n\n"
+    msg += "🏆 *Top 5 Best Sellers:*\n"
+    for i, (name, cnt) in enumerate(top_items, 1):
+        msg += f"  {i}. {name} - {cnt} orders\n"
+    if not top_items:
+        msg += "  No paid orders yet\n"
+    msg += f"\n👥 New customers this month: {fmt_number(new_customers)}"
+
+    await update.message.reply_text(msg, parse_mode=None)
+
+async def admin_revenue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return
+
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+
+    now = datetime.now()
+
+    msg = "💰 *Revenue Report*\n\n"
+
+    msg += "📅 *Daily Revenue (Last 7 Days):*\n"
+    msg += "```\n"
+    msg += f"{'Date':<12} {'Revenue':>12}\n"
+    msg += "-" * 25 + "\n"
+    for i in range(6, -1, -1):
+        day = now - timedelta(days=i)
+        day_str = day.strftime("%Y-%m-%d")
+        day_label = day.strftime("%b %d")
+        next_day = (day + timedelta(days=1)).strftime("%Y-%m-%d")
+        c.execute("SELECT COALESCE(SUM(CAST(REPLACE(price, ',', '') AS INTEGER)), 0) FROM orders WHERE status = 'paid' AND created >= ? AND created < ?", (day_str, next_day))
+        rev = c.fetchone()[0]
+        msg += f"{day_label:<12} {fmt_number(rev):>12}\n"
+    msg += "```\n\n"
+
+    msg += "📆 *Monthly Revenue (Last 6 Months):*\n"
+    msg += "```\n"
+    msg += f"{'Month':<12} {'Revenue':>12}\n"
+    msg += "-" * 25 + "\n"
+    for i in range(5, -1, -1):
+        month_date = now - timedelta(days=30 * i)
+        month_str = month_date.strftime("%Y-%m")
+        month_label = month_date.strftime("%b %Y")
+        c.execute("SELECT COALESCE(SUM(CAST(REPLACE(price, ',', '') AS INTEGER)), 0) FROM orders WHERE status = 'paid' AND created LIKE ?", (f"{month_str}%",))
+        rev = c.fetchone()[0]
+        msg += f"{month_label:<12} {fmt_number(rev):>12}\n"
+    msg += "```\n\n"
+
+    items = get_all_items()
+    item_types = set(i["type"] for i in items.values())
+
+    msg += "📊 *Revenue by Type:*\n"
+    for itype in sorted(item_types):
+        c.execute("SELECT COALESCE(SUM(CAST(REPLACE(o.price, ',', '') AS INTEGER)), 0) FROM orders o JOIN items i ON o.item_id = i.id WHERE o.status = 'paid' AND i.type = ?", (itype,))
+        rev = c.fetchone()[0]
+        icon = "📚" if itype == "course" else "🛠"
+        msg += f"  {icon} {itype.title()}: {fmt_number(rev)} MMK\n"
+
+    conn.close()
+
+    await update.message.reply_text(msg, parse_mode=None)
+
+async def admin_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return
+
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+
+    d30 = (datetime.now() - timedelta(days=30)).isoformat()
+    c.execute("SELECT * FROM orders WHERE created >= ? ORDER BY created DESC", (d30,))
+    rows = c.fetchall()
+
+    cols = ["id", "user_id", "username", "name", "item_id", "item_name", "price", "status", "payment_proof", "created"]
+    orders = [dict(zip(cols, row)) for row in rows]
+
+    total = len(orders)
+    paid = len([o for o in orders if o["status"] == "paid"])
+    pending = len([o for o in orders if o["status"] == "pending"])
+    total_rev = sum(parse_price(o["price"]) for o in orders if o["status"] == "paid")
+
+    conn.close()
+
+    msg = "📋 *Orders Export (Last 30 Days)*\n"
+    msg += "=" * 35 + "\n\n"
+    msg += f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+    msg += f"Total orders: {total}\n"
+    msg += f"Paid: {paid} | Pending: {pending}\n"
+    msg += f"Total revenue: {fmt_number(total_rev)} MMK\n\n"
+    msg += "-" * 35 + "\n\n"
+
+    for o in orders:
+        status_icon = "✅" if o["status"] == "paid" else "⏳"
+        created = o["created"][:10] if o["created"] else "N/A"
+        msg += f"{status_icon} Order {o['id']}\n"
+        msg += f"  Customer: {o['name']} (@{o['username']})\n"
+        msg += f"  Item: {o['item_name']}\n"
+        msg += f"  Amount: {o['price']} MMK\n"
+        msg += f"  Status: {o['status']}\n"
+        msg += f"  Date: {created}\n\n"
+
+    if not orders:
+        msg += "No orders in the last 30 days.\n"
+
+    await update.message.reply_text(msg, parse_mode=None)
 
 # === MESSAGE HANDLER FOR ADDING ITEMS ===
 async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -573,6 +740,9 @@ def main():
     app.add_handler(CommandHandler("admin_add_course", admin_add_course))
     app.add_handler(CommandHandler("admin_add_service", admin_add_service))
     app.add_handler(CommandHandler("admin_delete", admin_delete))
+    app.add_handler(CommandHandler("admin_stats", admin_stats))
+    app.add_handler(CommandHandler("admin_revenue", admin_revenue))
+    app.add_handler(CommandHandler("admin_export", admin_export))
     app.add_handler(CommandHandler("pending", admin_pending))
     app.add_handler(CommandHandler("approve", admin_approve))
     app.add_handler(CallbackQueryHandler(button_handler))
