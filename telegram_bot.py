@@ -65,7 +65,21 @@ def init_db():
         price TEXT,
         status TEXT DEFAULT 'pending',
         payment_proof TEXT,
-        created TEXT
+        created TEXT,
+        coupon_id TEXT,
+        original_price TEXT
+    )''')
+
+    # Coupons table
+    c.execute('''CREATE TABLE IF NOT EXISTS coupons (
+        id TEXT PRIMARY KEY,
+        code TEXT UNIQUE,
+        discount_type TEXT CHECK(discount_type IN ('percent', 'fixed')),
+        discount_value REAL NOT NULL,
+        max_uses INTEGER,
+        uses INTEGER DEFAULT 0,
+        expires_at TEXT,
+        is_active INTEGER DEFAULT 1
     )''')
     
     # User preferences table
@@ -175,7 +189,7 @@ def load_orders():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT * FROM orders")
-    orders = {row[0]: dict(zip(["id", "user_id", "username", "name", "item_id", "item_name", "price", "status", "payment_proof", "created"], row)) 
+    orders = {row[0]: dict(zip(["id", "user_id", "username", "name", "item_id", "item_name", "price", "status", "payment_proof", "created", "coupon_id", "original_price"], row)) 
              for row in c.fetchall()}
     conn.close()
     return orders
@@ -183,9 +197,10 @@ def load_orders():
 def save_order(order):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO orders VALUES (?,?,?,?,?,?,?,?,?,?)",
+    c.execute("INSERT OR REPLACE INTO orders VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                (order["id"], order["user_id"], order["username"], order["name"], order["item_id"],
-                order["item_name"], order["price"], order["status"], order.get("payment_proof", ""), order["created"]))
+                order["item_name"], order["price"], order["status"], order.get("payment_proof", ""), order["created"],
+                order.get("coupon_id"), order.get("original_price")))
     conn.commit()
     conn.close()
 
@@ -193,6 +208,83 @@ def update_order_status(order_id, status):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("UPDATE orders SET status=? WHERE id=?", (status, order_id))
+    conn.commit()
+    conn.close()
+
+# === COUPON FUNCTIONS ===
+def add_coupon(code, discount_type, discount_value, max_uses):
+    import uuid
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    coupon_id = uuid.uuid4().hex[:8]
+    c.execute("INSERT OR REPLACE INTO coupons (id, code, discount_type, discount_value, max_uses) VALUES (?,?,?,?,?)",
+              (coupon_id, code.upper(), discount_type, discount_value, max_uses))
+    conn.commit()
+    conn.close()
+    return coupon_id
+
+def get_coupon_by_code(code):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT * FROM coupons WHERE code=?", (code.upper(),))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return {"id": row[0], "code": row[1], "discount_type": row[2], "discount_value": row[3],
+                "max_uses": row[4], "uses": row[5], "expires_at": row[6], "is_active": row[7]}
+    return None
+
+def list_coupons(active_only=False):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    if active_only:
+        c.execute("SELECT * FROM coupons WHERE is_active=1")
+    else:
+        c.execute("SELECT * FROM coupons")
+    rows = c.fetchall()
+    conn.close()
+    return [{"id": r[0], "code": r[1], "discount_type": r[2], "discount_value": r[3],
+             "max_uses": r[4], "uses": r[5], "expires_at": r[6], "is_active": r[7]} for r in rows]
+
+def deactivate_coupon(code):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("UPDATE coupons SET is_active=0 WHERE code=?", (code.upper(),))
+    affected = c.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
+
+def validate_coupon(code):
+    coupon = get_coupon_by_code(code)
+    if not coupon:
+        return None, "not_found"
+    if not coupon["is_active"]:
+        return None, "inactive"
+    if coupon["max_uses"] is not None and coupon["uses"] >= coupon["max_uses"]:
+        return None, "max_uses"
+    if coupon["expires_at"]:
+        try:
+            exp = datetime.fromisoformat(coupon["expires_at"])
+            if datetime.now() > exp:
+                return None, "expired"
+        except ValueError:
+            pass
+    return coupon, "ok"
+
+def apply_discount(price_str, coupon):
+    price = parse_price(price_str)
+    if coupon["discount_type"] == "percent":
+        discount = int(price * coupon["discount_value"] / 100)
+    else:
+        discount = int(coupon["discount_value"])
+    discounted = max(0, price - discount)
+    return discounted, discount
+
+def increment_coupon_usage(coupon_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("UPDATE coupons SET uses = uses + 1 WHERE id=?", (coupon_id,))
     conn.commit()
     conn.close()
 
@@ -234,6 +326,14 @@ TEXTS = {
         "services_btn": "🛠 Services",
         "myorder_btn": "🛒 My Orders",
         "payment_btn": "💳 Payment",
+        "coupon_btn": "🎟 Have a coupon?",
+        "coupon_prompt": "🎟 Enter your coupon code:",
+        "coupon_applied": "✅ *Coupon Applied!*\n\nCode: `{}`\nDiscount: {}\n\n💰 Original: {} MMK\n🏷 Discount: -{} MMK\n*Total: {} MMK*",
+        "coupon_invalid": "❌ Invalid coupon code.",
+        "coupon_expired": "❌ This coupon has expired.",
+        "coupon_max_uses": "❌ This coupon has reached its usage limit.",
+        "coupon_inactive": "❌ This coupon is no longer active.",
+        "coupon_skipped": "❌ No coupon applied. Use 'Have a coupon?' to enter a code.",
         "lang_btn": "🌐 မြန်မာ",
         "out_of_stock": "❌ *Out of Stock*",
         "low_stock": "⚠️ Only {} left!",
@@ -258,6 +358,14 @@ TEXTS = {
         "services_btn": "🛠 ဝန်ဆောင်မှုများ",
         "myorder_btn": "🛒 ကျွန်ုပ်၏ အော်ဒါ",
         "payment_btn": "💳 ငွေပေးချေ",
+        "coupon_btn": "🎟 ကူပွန်ရှိပါသလား?",
+        "coupon_prompt": "🎟 ကူပွန်ကုဒ်ထည့်ပါ:",
+        "coupon_applied": "✅ *ကူပွန် အသုံးပြုပြီးပါပြီ!*\n\nCode: `{}`\nလျှော့ဈေး: {}\n\n💰 မူလဈေး: {} MMK\n🏷 လျှော့ဈေး: -{} MMK\n*စုစုပေါင်း: {} MMK*",
+        "coupon_invalid": "❌ ကူပွန်ကုဒ် မမှန်ပါ။",
+        "coupon_expired": "❌ ဤကူပွန်သည် သက်တမ်းကုန်ဆုံးသွားပါပြီ။",
+        "coupon_max_uses": "❌ ဤကူပွန်သည် အသုံးပြုခွင့် ပြည့်သွားပါပြီ။",
+        "coupon_inactive": "❌ ဤကူပွန်သည် အသုံးပြု၍ မရတော့ပါ။",
+        "coupon_skipped": "❌ ကူပွန်မသုံးပါ။ 'ကူပွန်ရှိပါသလား?' ကိုနှိပ်ပြီး ကုဒ်ထည့်ပါ။",
         "lang_btn": "🌐 English",
         "out_of_stock": "❌ *ကုန်သွားပါပြီ*",
         "low_stock": "⚠️ {} ခုသာကျန်တော့သည်!",
@@ -305,6 +413,7 @@ def item_detail_keyboard(item_id, back_target, lang="en", stock=-1):
 
 def payment_keyboard(lang="en"):
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton(get_text("coupon_btn", lang), callback_data="apply_coupon")],
         [InlineKeyboardButton(get_text("upload_btn", lang), callback_data="upload_proof")],
         [InlineKeyboardButton(get_text("back", lang), callback_data="back")]
     ])
@@ -334,7 +443,10 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "/approve <order_id> - Approve order\n"
     msg += "/admin_stats - Analytics overview\n"
     msg += "/admin_revenue - Revenue report\n"
-    msg += "/admin_export - Export orders (30d)"
+    msg += "/admin_export - Export orders (30d)\n"
+    msg += "/coupon_add CODE percent|fixed VALUE MAX_USES\n"
+    msg += "/coupon_list - List all coupons\n"
+    msg += "/coupon_delete CODE - Deactivate coupon"
     
     await update.message.reply_text(msg, parse_mode=None)
 
@@ -436,6 +548,86 @@ async def admin_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"✅ Stock for `{item_id}` set to {stock_label}!", parse_mode=None)
 
+async def admin_coupon_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return
+
+    args = context.args
+    if len(args) < 4:
+        await update.message.reply_text(
+            "Usage: `/coupon_add CODE percent|fixed VALUE MAX_USES`\n\n"
+            "Examples:\n"
+            "`/coupon_add SALE10 percent 10 50` (10% off, max 50 uses)\n"
+            "`/coupon_add FLAT5K fixed 5000 20` (5000 MMK off, max 20 uses)",
+            parse_mode=None
+        )
+        return
+
+    code = args[0].upper()
+    discount_type = args[1].lower()
+    if discount_type not in ("percent", "fixed"):
+        await update.message.reply_text("❌ Discount type must be `percent` or `fixed`.", parse_mode=None)
+        return
+
+    try:
+        discount_value = float(args[2])
+        max_uses = int(args[3])
+    except ValueError:
+        await update.message.reply_text("❌ Invalid value or max uses. Must be numbers.", parse_mode=None)
+        return
+
+    if get_coupon_by_code(code):
+        await update.message.reply_text(f"❌ Coupon `{code}` already exists.", parse_mode=None)
+        return
+
+    coupon_id = add_coupon(code, discount_type, discount_value, max_uses)
+
+    desc = f"{discount_value}%" if discount_type == "percent" else f"{fmt_number(int(discount_value))} MMK"
+    await update.message.reply_text(
+        f"✅ *Coupon Created!*\n\n"
+        f"ID: `{coupon_id}`\n"
+        f"Code: `{code}`\n"
+        f"Discount: {desc}\n"
+        f"Max Uses: {max_uses}",
+        parse_mode=None
+    )
+
+async def admin_coupon_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return
+
+    coupons = list_coupons()
+    if not coupons:
+        await update.message.reply_text("📋 No coupons found.", parse_mode=None)
+        return
+
+    msg = "📋 *All Coupons:*\n\n"
+    for c in coupons:
+        status = "✅" if c["is_active"] else "❌"
+        if c["discount_type"] == "percent":
+            desc = f"{c['discount_value']}%"
+        else:
+            desc = f"{fmt_number(int(c['discount_value']))} MMK"
+        expires = c["expires_at"][:10] if c["expires_at"] else "Never"
+        uses_str = f"{c['uses']}/{c['max_uses']}" if c["max_uses"] is not None else f"{c['uses']}/∞"
+        msg += f"{status} `{c['code']}` - {desc} off | Uses: {uses_str} | Expires: {expires}\n"
+
+    await update.message.reply_text(msg, parse_mode=None)
+
+async def admin_coupon_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: `/coupon_delete CODE`", parse_mode=None)
+        return
+
+    code = context.args[0]
+    if deactivate_coupon(code):
+        await update.message.reply_text(f"✅ Coupon `{code.upper()}` deactivated!", parse_mode=None)
+    else:
+        await update.message.reply_text(f"❌ Coupon `{code.upper()}` not found.", parse_mode=None)
+
 async def admin_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         return
@@ -469,6 +661,10 @@ async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     update_order_status(order_id, "paid")
+
+    order = orders[order_id]
+    if order.get("coupon_id"):
+        increment_coupon_usage(order["coupon_id"])
     
     item_id = orders[order_id]["item_id"]
     items = get_all_items()
@@ -658,9 +854,59 @@ async def admin_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(msg, parse_mode=None)
 
-# === MESSAGE HANDLER FOR ADDING ITEMS ===
+# === MESSAGE HANDLER FOR ADDING ITEMS AND COUPON INPUT ===
 async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
+
+    # Handle coupon code input
+    if context.bot_data.get("awaiting_coupon", {}).get(user_id):
+        del context.bot_data["awaiting_coupon"][user_id]
+        lang = get_user_lang(user_id)
+        pending = context.bot_data.get("pending_payment", {}).get(user_id)
+
+        if not pending:
+            await update.message.reply_text(get_text("no_pending", lang), parse_mode=None)
+            return
+
+        code = update.message.text.strip()
+        coupon, status = validate_coupon(code)
+
+        if status == "not_found":
+            await update.message.reply_text(get_text("coupon_invalid", lang), parse_mode=None)
+            return
+        if status == "expired":
+            await update.message.reply_text(get_text("coupon_expired", lang), parse_mode=None)
+            return
+        if status == "max_uses":
+            await update.message.reply_text(get_text("coupon_max_uses", lang), parse_mode=None)
+            return
+        if status == "inactive":
+            await update.message.reply_text(get_text("coupon_inactive", lang), parse_mode=None)
+            return
+
+        original_price = pending.get("original_price", pending["price"])
+        discounted, discount_amount = apply_discount(original_price, coupon)
+
+        if coupon["discount_type"] == "percent":
+            discount_desc = f"{coupon['discount_value']}%"
+        else:
+            discount_desc = f"{fmt_number(int(coupon['discount_value']))} MMK"
+
+        pending["price"] = fmt_number(discounted)
+        pending["coupon_id"] = coupon["id"]
+        pending["coupon_code"] = coupon["code"]
+
+        text = get_text("coupon_applied", lang).format(
+            coupon["code"], discount_desc,
+            fmt_number(parse_price(original_price)),
+            fmt_number(discount_amount),
+            fmt_number(discounted)
+        )
+        markup = payment_keyboard(lang)
+        await update.message.reply_text(text, reply_markup=markup, parse_mode=None)
+        return
+
+    # Handle admin item input
     awaiting = context.bot_data.get("awaiting_admin_input", {})
     item_type = awaiting.get(user_id)
     
@@ -729,11 +975,16 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "name": update.message.from_user.first_name or "N/A",
         "item_id": pending["item_id"], "item_name": pending["name"],
         "price": pending["price"], "status": "pending",
-        "payment_proof": f"photo:{photo.file_id}", "created": datetime.now().isoformat()
+        "payment_proof": f"photo:{photo.file_id}", "created": datetime.now().isoformat(),
+        "coupon_id": pending.get("coupon_id"),
+        "original_price": pending.get("original_price")
     }
     save_order(order)
     
-    caption = f"🆕 *New Payment!*\n\nOrder: `{order_id}`\nUser: {update.message.from_user.first_name}\nItem: {pending['name']}\nAmount: {pending['price']} MMK\n\n/approve {order_id}"
+    coupon_info = ""
+    if pending.get("coupon_code"):
+        coupon_info = f"\n🏷 Coupon: `{pending['coupon_code']}`\nOriginal: {pending.get('original_price', pending['price'])} MMK"
+    caption = f"🆕 *New Payment!*\n\nOrder: `{order_id}`\nUser: {update.message.from_user.first_name}\nItem: {pending['name']}\nAmount: {pending['price']} MMK{coupon_info}\n\n/approve {order_id}"
     
     try:
         await context.bot.send_photo(OWNER_ID, photo.file_id, caption=caption, parse_mode=None)
@@ -799,7 +1050,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             name = item.get("name_mm", item["name"]) if lang == "mm" else item["name"]
             text = get_text("added_to_cart", lang).format(name, item['price'], ACCOUNT_NUMBER, ACCOUNT_NAME, item['price'])
-            context.bot_data.setdefault("pending_payment", {})[user_id] = {"item_id": raw_id, "price": item['price'], "name": name}
+            context.bot_data.setdefault("pending_payment", {})[user_id] = {"item_id": raw_id, "price": item['price'], "original_price": item['price'], "name": name}
             await query.edit_message_text(text, reply_markup=payment_keyboard(lang), parse_mode=None)
     
     elif data == "my_order":
@@ -827,7 +1078,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "upload_proof":
         await query.answer()
         await context.bot.send_message(chat_id=user_id, text=get_text("upload_proof", lang), parse_mode=None)
-    
+
+    elif data == "apply_coupon":
+        pending = context.bot_data.get("pending_payment", {}).get(user_id)
+        if not pending:
+            await query.answer(get_text("no_pending", lang), show_alert=True)
+            return
+        context.bot_data.setdefault("awaiting_coupon", {})[user_id] = True
+        await query.answer()
+        await context.bot.send_message(chat_id=user_id, text=get_text("coupon_prompt", lang), parse_mode=None)
+
     elif data == "back":
         await query.edit_message_text(get_text("main_menu", lang), reply_markup=main_menu_keyboard(lang))
     
@@ -852,6 +1112,9 @@ def main():
     app.add_handler(CommandHandler("admin_add_service", admin_add_service))
     app.add_handler(CommandHandler("admin_delete", admin_delete))
     app.add_handler(CommandHandler("admin_stock", admin_stock))
+    app.add_handler(CommandHandler("coupon_add", admin_coupon_add))
+    app.add_handler(CommandHandler("coupon_list", admin_coupon_list))
+    app.add_handler(CommandHandler("coupon_delete", admin_coupon_delete))
     app.add_handler(CommandHandler("admin_stats", admin_stats))
     app.add_handler(CommandHandler("admin_revenue", admin_revenue))
     app.add_handler(CommandHandler("admin_export", admin_export))
