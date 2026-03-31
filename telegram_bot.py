@@ -56,6 +56,12 @@ def init_db():
         created TEXT
     )''')
     
+    # User preferences table
+    c.execute('''CREATE TABLE IF NOT EXISTS user_prefs (
+        user_id TEXT PRIMARY KEY,
+        lang TEXT DEFAULT 'mm'
+    )''')
+    
     conn.commit()
     
     # Insert default items if empty
@@ -148,6 +154,22 @@ def update_order_status(order_id, status):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("UPDATE orders SET status=? WHERE id=?", (status, order_id))
+    conn.commit()
+    conn.close()
+
+def get_user_lang(user_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT lang FROM user_prefs WHERE user_id=?", (str(user_id),))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else "mm"
+
+def set_user_lang(user_id, lang):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO user_prefs (user_id, lang) VALUES (?, ?)",
+              (str(user_id), lang))
     conn.commit()
     conn.close()
 
@@ -263,7 +285,7 @@ async def admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         return
     
-    items = get_all_all = get_all_items()
+    items = all_items = get_all_items()
     msg = "📋 *All Items:*\n\n"
     
     msg += "📦 *Courses:*\n"
@@ -284,6 +306,7 @@ async def admin_add_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         return
     
+    context.bot_data.setdefault("awaiting_admin_input", {})[str(update.effective_user.id)] = "course"
     await update.message.reply_text(
         "📦 *Add New Course*\n\n"
         "Send in this format:\n"
@@ -292,12 +315,12 @@ async def admin_add_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`3|New Course|သင်တန်းအသစ်|50,000|Course desc|သင်တန်းအသစ်အောက်မှာ`",
         parse_mode=None
     )
-    return "awaiting_course"
 
 async def admin_add_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         return
     
+    context.bot_data.setdefault("awaiting_admin_input", {})[str(update.effective_user.id)] = "service"
     await update.message.reply_text(
         "🛠 *Add New Service*\n\n"
         "Send in this format:\n"
@@ -306,7 +329,6 @@ async def admin_add_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`s3|Web Dev|ဝက်ဘ်ဖန်တီးခြင်း|100,000|We build websites|ဝက်ဘ်ဆိုဒ်များဖန်တီးပါးစပါး`",
         parse_mode=None
     )
-    return "awaiting_service"
 
 async def admin_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
@@ -356,7 +378,7 @@ async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         buyer_id = orders[order_id]["user_id"]
-        lang = context.bot_data.get("user_lang", {}).get(buyer_id, "mm")
+        lang = get_user_lang(buyer_id)
         
         notify_msg = "🎉 *အတည်ပြုပါပြီ!*\n\nသင့်ငွေလွှဲကို ရရှိပြီး အတည်ပြုပါပြီ။" if lang == "mm" else "🎉 *Payment Approved!*\n\nYour order is confirmed."
         
@@ -367,23 +389,56 @@ async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === MESSAGE HANDLER FOR ADDING ITEMS ===
 async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # This is a simplified version - in production use conversation states
-    pass
+    user_id = str(update.effective_user.id)
+    awaiting = context.bot_data.get("awaiting_admin_input", {})
+    item_type = awaiting.get(user_id)
+    
+    if not item_type:
+        return
+    
+    if update.effective_user.id != OWNER_ID:
+        return
+    
+    text = update.message.text.strip()
+    parts = text.split("|")
+    
+    if len(parts) < 6:
+        await update.message.reply_text(
+            "❌ Invalid format. Need 6 parts separated by `|`:\n"
+            "`id|name|name_mm|price|description|description_mm`",
+            parse_mode=None
+        )
+        return
+    
+    item_id = parts[0].strip()
+    name = parts[1].strip()
+    name_mm = parts[2].strip()
+    price = parts[3].strip()
+    description = parts[4].strip()
+    description_mm = parts[5].strip()
+    
+    add_item(item_id, name, name_mm, price, item_type, description, description_mm)
+    
+    del context.bot_data["awaiting_admin_input"][user_id]
+    
+    type_label = "Course" if item_type == "course" else "Service"
+    await update.message.reply_text(
+        f"✅ {type_label} added!\n\n"
+        f"ID: `{item_id}`\n"
+        f"Name: {name}\n"
+        f"Price: {price} MMK",
+        parse_mode=None
+    )
 
 # === GENERAL HANDLERS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
-    if "user_lang" not in context.bot_data:
-        context.bot_data["user_lang"] = {}
-    if user_id not in context.bot_data["user_lang"]:
-        context.bot_data["user_lang"][user_id] = "mm"
-    
-    lang = context.bot_data["user_lang"][user_id]
+    lang = get_user_lang(user_id)
     await update.message.reply_text(get_text("welcome", lang), reply_markup=main_menu_keyboard(lang))
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
-    lang = context.bot_data.get("user_lang", {}).get(user_id, "mm")
+    lang = get_user_lang(user_id)
     
     photo = update.message.photo[-1] if update.message.photo else None
     if not photo:
@@ -423,11 +478,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = str(query.from_user.id)
     data = query.data
-    lang = context.bot_data.setdefault("user_lang", {}).setdefault(user_id, "mm")
+    lang = get_user_lang(user_id)
     
     if data == "switch_lang":
         lang = "en" if lang == "mm" else "mm"
-        context.bot_data["user_lang"][user_id] = lang
+        set_user_lang(user_id, lang)
         await query.edit_message_text(get_text("main_menu", lang), reply_markup=main_menu_keyboard(lang))
         return
     
@@ -513,6 +568,7 @@ def main():
     app.add_handler(CommandHandler("approve", admin_approve))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_input))
     
     print("🤖 Bot (SQLite) starting with admin management...")
     app.run_polling()
