@@ -58,8 +58,20 @@ def init_db():
         price TEXT,
         status TEXT DEFAULT 'pending',
         payment_proof TEXT,
-        created TEXT
+        created TEXT,
+        cancelled_by TEXT,
+        rejection_reason TEXT,
+        updated_at TEXT,
+        coupon_code TEXT
     )''')
+    
+    # Migration: add new columns if they don't exist
+    for col, typ in [("cancelled_by", "TEXT"), ("rejection_reason", "TEXT"),
+                     ("updated_at", "TEXT"), ("coupon_code", "TEXT")]:
+        try:
+            c.execute(f"ALTER TABLE orders ADD COLUMN {col} {typ}")
+        except sqlite3.OperationalError:
+            pass
     
     # User preferences table
     c.execute('''CREATE TABLE IF NOT EXISTS user_prefs (
@@ -137,30 +149,72 @@ def get_all_items():
     return items
 
 # === ORDER FUNCTIONS ===
+ORDER_COLUMNS = ["id", "user_id", "username", "name", "item_id", "item_name",
+                 "price", "status", "payment_proof", "created",
+                 "cancelled_by", "rejection_reason", "updated_at", "coupon_code"]
+
+def _row_to_order(row):
+    return dict(zip(ORDER_COLUMNS, row))
+
 def load_orders():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT * FROM orders")
-    orders = {row[0]: dict(zip(["id", "user_id", "username", "name", "item_id", "item_name", "price", "status", "payment_proof", "created"], row)) 
-             for row in c.fetchall()}
+    orders = {row[0]: _row_to_order(row) for row in c.fetchall()}
     conn.close()
     return orders
+
+def get_order(order_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT * FROM orders WHERE id=?", (order_id,))
+    row = c.fetchone()
+    conn.close()
+    return _row_to_order(row) if row else None
 
 def save_order(order):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO orders VALUES (?,?,?,?,?,?,?,?,?,?)",
+    now = datetime.now().isoformat()
+    c.execute("INSERT OR REPLACE INTO orders VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                (order["id"], order["user_id"], order["username"], order["name"], order["item_id"],
-                order["item_name"], order["price"], order["status"], order.get("payment_proof", ""), order["created"]))
+                order["item_name"], order["price"], order["status"], order.get("payment_proof", ""),
+                order["created"], order.get("cancelled_by"), order.get("rejection_reason"),
+                now, order.get("coupon_code")))
     conn.commit()
     conn.close()
 
-def update_order_status(order_id, status):
+def update_order_status(order_id, status, cancelled_by=None, rejection_reason=None):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("UPDATE orders SET status=? WHERE id=?", (status, order_id))
+    now = datetime.now().isoformat()
+    c.execute("""UPDATE orders SET status=?, updated_at=?,
+                    cancelled_by=COALESCE(?, cancelled_by),
+                    rejection_reason=COALESCE(?, rejection_reason)
+                 WHERE id=?""",
+              (status, now, cancelled_by, rejection_reason, order_id))
     conn.commit()
     conn.close()
+
+def get_user_orders(user_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT * FROM orders WHERE user_id=? ORDER BY created DESC", (str(user_id),))
+    orders = [_row_to_order(row) for row in c.fetchall()]
+    conn.close()
+    return orders
+
+def get_recent_orders(limit=20, status_filter=None):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    if status_filter:
+        c.execute("SELECT * FROM orders WHERE status=? ORDER BY created DESC LIMIT ?",
+                  (status_filter, limit))
+    else:
+        c.execute("SELECT * FROM orders ORDER BY created DESC LIMIT ?", (limit,))
+    orders = [_row_to_order(row) for row in c.fetchall()]
+    conn.close()
+    return orders
 
 def get_user_lang(user_id):
     conn = sqlite3.connect(DB_FILE)
@@ -201,6 +255,22 @@ TEXTS = {
         "myorder_btn": "🛒 My Orders",
         "payment_btn": "💳 Payment",
         "lang_btn": "🌐 မြန်မာ",
+        # Order management
+        "cancel_order_btn": "❌ Cancel Order",
+        "cancel_confirm": "⚠️ Are you sure you want to cancel this order?",
+        "cancel_yes": "✅ Yes, Cancel",
+        "cancel_no": "🔙 No, Go Back",
+        "order_cancelled": "✅ Order `{}` has been cancelled.",
+        "order_not_cancellable": "❌ Only pending orders can be cancelled.",
+        "order_detail_title": "📋 *Order Details*",
+        "order_detail_id": "Order ID",
+        "order_detail_item": "Item",
+        "order_detail_price": "Price",
+        "order_detail_status": "Status",
+        "order_detail_date": "Date",
+        "order_detail_coupon": "Coupon",
+        "order_not_found": "❌ Order not found.",
+        "my_orders_title": "📋 *Your Orders*\n\nTap an order to see details:",
     },
     "mm": {
         "welcome": "👋 မင်္ဂလာပါ။\n\nသင်တန်းများနှင့် ဝန်ဆောင်မှုများအတွက် ကူညီပေးမည့် Bot ဖြစ်ပါသည်။",
@@ -223,6 +293,22 @@ TEXTS = {
         "myorder_btn": "🛒 ကျွန်ုပ်၏ အော်ဒါ",
         "payment_btn": "💳 ငွေပေးချေ",
         "lang_btn": "🌐 English",
+        # Order management
+        "cancel_order_btn": "❌ အော်ဒါ ပယ်ဖျက်မည်",
+        "cancel_confirm": "⚠️ ဤအော်ဒါကို ပယ်ဖျက်လိုသည်မှာ သေချာပါသလား?",
+        "cancel_yes": "✅ ဟုတ်ကဲ့၊ ပယ်ဖျက်မည်",
+        "cancel_no": "🔙 မဟုတ်ပါ၊ နောက်သို့",
+        "order_cancelled": "✅ အော်ဒါ `{}` ပယ်ဖျက်ပြီးပါပြီ။",
+        "order_not_cancellable": "❌ စောင့်ဆိုင်းဆဲ အော်ဒါများသာ ပယ်ဖျက်နိုင်ပါသည်။",
+        "order_detail_title": "📋 *အော်ဒါ အသေးစိတ်*",
+        "order_detail_id": "အော်ဒါ နံပါတ်",
+        "order_detail_item": "ပစ္စည်း",
+        "order_detail_price": "ဈေးနှုန်း",
+        "order_detail_status": "အခြေအနေ",
+        "order_detail_date": "ရက်စွဲ",
+        "order_detail_coupon": "ကူပွန်",
+        "order_not_found": "❌ အော်ဒါ မတွေ့ပါ။",
+        "my_orders_title": "📋 *သင့်အော်ဒါများ*\n\nအသေးစိတ်ကြည့်ရန် အော်ဒါကို နှိပ်ပါ:",
     }
 }
 
@@ -261,6 +347,54 @@ def payment_keyboard(lang="en"):
         [InlineKeyboardButton(get_text("back", lang), callback_data="back")]
     ])
 
+def status_emoji(status):
+    return {"pending": "⏳", "paid": "✅", "cancelled": "🚫", "rejected": "❌"}.get(status, "❓")
+
+def status_label(status, lang="en"):
+    labels = {
+        "en": {"pending": "Pending", "paid": "Paid", "cancelled": "Cancelled", "rejected": "Rejected"},
+        "mm": {"pending": "စောင့်ဆိုင်းဆဲ", "paid": "ပေးချေပြီး", "cancelled": "ပယ်ဖျက်ပြီး", "rejected": "ငြင်းပယ်ပြီး"},
+    }
+    return labels.get(lang, labels["en"]).get(status, status)
+
+def format_order_date(iso_str):
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return iso_str[:16] if iso_str else "N/A"
+
+def order_detail_text(order, lang="en"):
+    emoji = status_emoji(order["status"])
+    slabel = status_label(order["status"], lang)
+    date_str = format_order_date(order["created"])
+    text = f"{get_text('order_detail_title', lang)}\n\n"
+    text += f"🆔 `{order['id']}`\n"
+    text += f"📦 {order['item_name']}\n"
+    text += f"💰 {order['price']} MMK\n"
+    text += f"{emoji} {slabel}\n"
+    text += f"📅 {date_str}\n"
+    if order.get("coupon_code"):
+        coupon_label = get_text("order_detail_coupon", lang)
+        text += f"🏷 {coupon_label}: {order['coupon_code']}\n"
+    if order.get("rejection_reason"):
+        reason_label = "Reason" if lang == "en" else "အကြောင်းရင်း"
+        text += f"📝 {reason_label}: {order['rejection_reason']}\n"
+    if order.get("cancelled_by"):
+        by_label = "Cancelled by" if lang == "en" else "ပယ်ဖျက်သူ"
+        text += f"👤 {by_label}: {order['cancelled_by']}\n"
+    return text
+
+def order_detail_keyboard(order, lang="en"):
+    keyboard = []
+    if order["status"] == "pending":
+        keyboard.append([InlineKeyboardButton(
+            get_text("cancel_order_btn", lang),
+            callback_data=f"cancel_ask_{order['id']}"
+        )])
+    keyboard.append([InlineKeyboardButton(get_text("back", lang), callback_data="my_order")])
+    return InlineKeyboardMarkup(keyboard)
+
 # === ADMIN HANDLERS ===
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
@@ -283,6 +417,8 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "/admin delete <id> - Delete item\n"
     msg += "/pending - View pending orders\n"
     msg += "/approve <order_id> - Approve order\n"
+    msg += "/admin reject <order_id> [reason] - Reject order\n"
+    msg += "/admin orders [status] - List orders (pending/paid/cancelled/rejected)\n"
     msg += "/admin_stats - Analytics overview\n"
     msg += "/admin_revenue - Revenue report\n"
     msg += "/admin_export - Export orders (30d)"
@@ -376,24 +512,139 @@ async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     order_id = context.args[0]
-    orders = load_orders()
+    order = get_order(order_id)
     
-    if order_id not in orders:
+    if not order:
         await update.message.reply_text(f"❌ Order `{order_id}` not found.", parse_mode=None)
         return
     
-    update_order_status(order_id, "paid")
+    if order["status"] != "pending":
+        await update.message.reply_text(f"❌ Order `{order_id}` is already `{order['status']}`.", parse_mode=None)
+        return
+    
+    update_order_status(order_id, "paid", cancelled_by=f"admin:{OWNER_ID}")
     
     try:
-        buyer_id = orders[order_id]["user_id"]
+        buyer_id = order["user_id"]
         lang = get_user_lang(buyer_id)
         
-        notify_msg = "🎉 *အတည်ပြုပါပြီ!*\n\nသင့်ငွေလွှဲကို ရရှိပြီး အတည်ပြုပါပြီ။" if lang == "mm" else "🎉 *Payment Approved!*\n\nYour order is confirmed."
+        if lang == "mm":
+            notify_msg = (f"🎉 *ငွေပေးချေမှု အတည်ပြုပါပြီ!*\n\n"
+                          f"🆔 Order: `{order_id}`\n"
+                          f"📦 {order['item_name']}\n"
+                          f"💰 {order['price']} MMK\n\n"
+                          f"သင့်ငွေလွှဲကို ရရှိပြီး အတည်ပြုပါပြီ။")
+        else:
+            notify_msg = (f"🎉 *Payment Approved!*\n\n"
+                          f"🆔 Order: `{order_id}`\n"
+                          f"📦 {order['item_name']}\n"
+                          f"💰 {order['price']} MMK\n\n"
+                          f"Your order is confirmed.")
         
         await context.bot.send_message(chat_id=buyer_id, text=notify_msg, parse_mode=None)
-        await update.message.reply_text(f"✅ Order `{order_id}` approved!", parse_mode=None)
+        await update.message.reply_text(f"✅ Order `{order_id}` approved! Buyer notified.", parse_mode=None)
     except Exception as e:
         await update.message.reply_text(f"✅ Approved but couldn't notify: {e}")
+
+async def admin_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: `/admin reject <order_id> [reason]`\n"
+            "Example: `/admin reject 2603311200123 Suspicious payment`",
+            parse_mode=None
+        )
+        return
+    
+    order_id = context.args[0]
+    reason = " ".join(context.args[1:]) if len(context.args) > 1 else ""
+    
+    order = get_order(order_id)
+    if not order:
+        await update.message.reply_text(f"❌ Order `{order_id}` not found.", parse_mode=None)
+        return
+    
+    if order["status"] != "pending":
+        await update.message.reply_text(f"❌ Order `{order_id}` is already `{order['status']}`.", parse_mode=None)
+        return
+    
+    update_order_status(order_id, "rejected", cancelled_by=f"admin:{OWNER_ID}", rejection_reason=reason)
+    
+    try:
+        buyer_id = order["user_id"]
+        lang = get_user_lang(buyer_id)
+        
+        if lang == "mm":
+            notify_msg = (f"❌ *ငွေပေးချေမှု ငြင်းပယ်ပါပြီ*\n\n"
+                          f"🆔 Order: `{order_id}`\n"
+                          f"📦 {order['item_name']}\n"
+                          f"💰 {order['price']} MMK")
+            if reason:
+                notify_msg += f"\n📝 အကြောင်းရင်း: {reason}"
+            notify_msg += "\n\nကျေးဇူးပြု၍ ပြန်လည်စစ်ဆေးပြီး ဆက်သွယ်ပါ။"
+        else:
+            notify_msg = (f"❌ *Payment Rejected*\n\n"
+                          f"🆔 Order: `{order_id}`\n"
+                          f"📦 {order['item_name']}\n"
+                          f"💰 {order['price']} MMK")
+            if reason:
+                notify_msg += f"\n📝 Reason: {reason}"
+            notify_msg += "\n\nPlease contact support for more information."
+        
+        await context.bot.send_message(chat_id=buyer_id, text=notify_msg, parse_mode=None)
+        await update.message.reply_text(f"✅ Order `{order_id}` rejected. Buyer notified.", parse_mode=None)
+    except Exception as e:
+        await update.message.reply_text(f"✅ Rejected but couldn't notify: {e}")
+
+async def admin_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return
+    
+    valid_filters = {"pending", "paid", "cancelled", "rejected"}
+    status_filter = None
+    if context.args:
+        candidate = context.args[0].lower()
+        if candidate in valid_filters:
+            status_filter = candidate
+        else:
+            await update.message.reply_text(
+                f"❌ Invalid filter. Use: {', '.join(valid_filters)}",
+                parse_mode=None
+            )
+            return
+    
+    orders_list = get_recent_orders(limit=20, status_filter=status_filter)
+    
+    if not orders_list:
+        filter_label = f" ({status_filter})" if status_filter else ""
+        await update.message.reply_text(f"✅ No orders{filter_label} found.", parse_mode=None)
+        return
+    
+    title = f"📋 *Orders"
+    if status_filter:
+        title += f" ({status_filter})"
+    title += ":*\n\n"
+    msg = title
+    
+    for o in orders_list:
+        emoji = status_emoji(o["status"])
+        date_str = format_order_date(o["created"])
+        msg += f"{emoji} `{o['id']}`\n"
+        msg += f"  👤 {o['name']} (@{o['username']})\n"
+        msg += f"  📦 {o['item_name']} - {o['price']} MMK\n"
+        msg += f"  📅 {date_str}\n"
+        if o.get("rejection_reason"):
+            msg += f"  📝 Reason: {o['rejection_reason']}\n"
+        msg += "─────────────\n"
+    
+    if len(msg) > 4000:
+        parts = [msg[i:i+4000] for i in range(0, len(msg), 4000)]
+        for part in parts:
+            await update.message.reply_text(part, parse_mode=None)
+    else:
+        await update.message.reply_text(msg, parse_mode=None)
 
 # === ANALYTICS HANDLERS ===
 
@@ -526,13 +777,14 @@ async def admin_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c.execute("SELECT * FROM orders WHERE created >= ? ORDER BY created DESC", (d30,))
     rows = c.fetchall()
 
-    cols = ["id", "user_id", "username", "name", "item_id", "item_name", "price", "status", "payment_proof", "created"]
-    orders = [dict(zip(cols, row)) for row in rows]
+    orders_list = [_row_to_order(row) for row in rows]
 
-    total = len(orders)
-    paid = len([o for o in orders if o["status"] == "paid"])
-    pending = len([o for o in orders if o["status"] == "pending"])
-    total_rev = sum(parse_price(o["price"]) for o in orders if o["status"] == "paid")
+    total = len(orders_list)
+    paid = len([o for o in orders_list if o["status"] == "paid"])
+    pending = len([o for o in orders_list if o["status"] == "pending"])
+    cancelled = len([o for o in orders_list if o["status"] == "cancelled"])
+    rejected = len([o for o in orders_list if o["status"] == "rejected"])
+    total_rev = sum(parse_price(o["price"]) for o in orders_list if o["status"] == "paid")
 
     conn.close()
 
@@ -540,21 +792,24 @@ async def admin_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "=" * 35 + "\n\n"
     msg += f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
     msg += f"Total orders: {total}\n"
-    msg += f"Paid: {paid} | Pending: {pending}\n"
+    msg += f"Paid: {paid} | Pending: {pending} | Cancelled: {cancelled} | Rejected: {rejected}\n"
     msg += f"Total revenue: {fmt_number(total_rev)} MMK\n\n"
     msg += "-" * 35 + "\n\n"
 
-    for o in orders:
-        status_icon = "✅" if o["status"] == "paid" else "⏳"
-        created = o["created"][:10] if o["created"] else "N/A"
-        msg += f"{status_icon} Order {o['id']}\n"
+    for o in orders_list:
+        emoji = status_emoji(o["status"])
+        created = format_order_date(o["created"])
+        msg += f"{emoji} Order {o['id']}\n"
         msg += f"  Customer: {o['name']} (@{o['username']})\n"
         msg += f"  Item: {o['item_name']}\n"
         msg += f"  Amount: {o['price']} MMK\n"
         msg += f"  Status: {o['status']}\n"
-        msg += f"  Date: {created}\n\n"
+        msg += f"  Date: {created}\n"
+        if o.get("rejection_reason"):
+            msg += f"  Reason: {o['rejection_reason']}\n"
+        msg += "\n"
 
-    if not orders:
+    if not orders_list:
         msg += "No orders in the last 30 days.\n"
 
     await update.message.reply_text(msg, parse_mode=None)
@@ -695,19 +950,70 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(text, reply_markup=payment_keyboard(lang), parse_mode=None)
     
     elif data == "my_order":
-        orders = load_orders()
-        user_orders = [o for o in orders.values() if o["user_id"] == user_id]
+        user_orders = get_user_orders(user_id)
         
         if not user_orders:
             msg = "📭 သင်ဝယ်ယူထားသည်များ မရှိသေးပါ။" if lang == "mm" else "📭 No orders yet."
+            markup = InlineKeyboardMarkup([[InlineKeyboardButton(get_text("back", lang), callback_data="back")]])
         else:
-            msg = "📋 *Your Orders:*\n\n"
-            for o in sorted(user_orders, key=lambda x: x["created"], reverse=True)[:5]:
-                status = "⏳" if o["status"] == "pending" else "✅"
-                msg += f"{status} `{o['id'][-6:]}` - {o['item_name']} - {o['price']} MMK\n"
+            msg = get_text("my_orders_title", lang)
+            keyboard = []
+            for o in user_orders[:10]:
+                emoji = status_emoji(o["status"])
+                short_id = o["id"][-6:]
+                label = f"{emoji} {short_id} - {o['item_name']}"
+                keyboard.append([InlineKeyboardButton(label, callback_data=f"order_{o['id']}")])
+            keyboard.append([InlineKeyboardButton(get_text("back", lang), callback_data="back")])
+            markup = InlineKeyboardMarkup(keyboard)
         
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton(get_text("back", lang), callback_data="back")]])
         await query.edit_message_text(msg, reply_markup=markup, parse_mode=None)
+    
+    elif data.startswith("order_"):
+        oid = data[6:]
+        order = get_order(oid)
+        if not order or order["user_id"] != user_id:
+            await query.answer(get_text("order_not_found", lang), show_alert=True)
+            return
+        text = order_detail_text(order, lang)
+        markup = order_detail_keyboard(order, lang)
+        await query.edit_message_text(text, reply_markup=markup, parse_mode=None)
+    
+    elif data.startswith("cancel_ask_"):
+        oid = data[11:]
+        order = get_order(oid)
+        if not order or order["user_id"] != user_id:
+            await query.answer(get_text("order_not_found", lang), show_alert=True)
+            return
+        if order["status"] != "pending":
+            await query.answer(get_text("order_not_cancellable", lang), show_alert=True)
+            return
+        text = get_text("cancel_confirm", lang) + f"\n\n🆔 `{oid}`\n📦 {order['item_name']}"
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton(get_text("cancel_yes", lang), callback_data=f"cancel_yes_{oid}")],
+            [InlineKeyboardButton(get_text("cancel_no", lang), callback_data=f"order_{oid}")]
+        ])
+        await query.edit_message_text(text, reply_markup=markup, parse_mode=None)
+    
+    elif data.startswith("cancel_yes_"):
+        oid = data[11:]
+        order = get_order(oid)
+        if not order or order["user_id"] != user_id:
+            await query.answer(get_text("order_not_found", lang), show_alert=True)
+            return
+        if order["status"] != "pending":
+            await query.answer(get_text("order_not_cancellable", lang), show_alert=True)
+            return
+        update_order_status(oid, "cancelled", cancelled_by=f"user:{user_id}")
+        
+        notify_text = f"🚫 Order `{oid}` cancelled by buyer (@{query.from_user.username or user_id})"
+        try:
+            await context.bot.send_message(OWNER_ID, notify_text, parse_mode=None)
+        except Exception:
+            pass
+        
+        text = get_text("order_cancelled", lang).format(oid)
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton(get_text("back", lang), callback_data="my_order")]])
+        await query.edit_message_text(text, reply_markup=markup, parse_mode=None)
     
     elif data == "payment":
         text = get_text("payment_details", lang).format(ACCOUNT_NUMBER, ACCOUNT_NAME)
@@ -745,6 +1051,8 @@ def main():
     app.add_handler(CommandHandler("admin_export", admin_export))
     app.add_handler(CommandHandler("pending", admin_pending))
     app.add_handler(CommandHandler("approve", admin_approve))
+    app.add_handler(CommandHandler("admin_reject", admin_reject))
+    app.add_handler(CommandHandler("admin_orders", admin_orders))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_input))
