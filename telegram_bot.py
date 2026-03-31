@@ -44,8 +44,15 @@ def init_db():
         type TEXT NOT NULL,
         description TEXT,
         description_mm TEXT,
-        is_active INTEGER DEFAULT 1
+        is_active INTEGER DEFAULT 1,
+        stock INTEGER DEFAULT -1
     )''')
+
+    # Migration: add stock column if missing
+    c.execute("PRAGMA table_info(items)")
+    columns = [col[1] for col in c.fetchall()]
+    if "stock" not in columns:
+        c.execute("ALTER TABLE items ADD COLUMN stock INTEGER DEFAULT -1")
     
     # Orders table
     c.execute('''CREATE TABLE IF NOT EXISTS orders (
@@ -86,7 +93,8 @@ def init_db():
              "Automate with AI:\n\n• Customer support AI\n• Document summarization\n• Content generation\n• OpenClaw setup",
              "AI ဖြင့် လုပ်ငန်းကို အော်တိုမေးရှင်း ပြုလုပ်ပေးမည်။\n\n• Customer စာပြန်ပေးမည့် AI\n• စာရွက်အကျဉ်းချုပ်\n• Content ရေးသားပေးခြင်း"),
         ]
-        c.executemany("INSERT INTO items VALUES (?,?,?,?,?,?,?,1)", default_items)
+        c.executemany("INSERT INTO items VALUES (?,?,?,?,?,?,?,?,?)",
+                       [(i[0], i[1], i[2], i[3], i[4], i[5], i[6], 1, -1) for i in default_items])
         conn.commit()
     
     conn.close()
@@ -104,17 +112,18 @@ def get_items(item_type=None, active_only=True):
             c.execute("SELECT * FROM items WHERE is_active=1")
         else:
             c.execute("SELECT * FROM items")
-    items = {row[0]: {"id": row[0], "name": row[1], "name_mm": row[2], "price": row[3], 
-                      "type": row[4], "description": row[5], "description_mm": row[6], "is_active": row[7]} 
+    items = {row[0]: {"id": row[0], "name": row[1], "name_mm": row[2], "price": row[3],
+                      "type": row[4], "description": row[5], "description_mm": row[6], "is_active": row[7],
+                      "stock": row[8] if len(row) > 8 else -1}
                      for row in c.fetchall()}
     conn.close()
     return items
 
-def add_item(item_id, name, name_mm, price, item_type, description, description_mm):
+def add_item(item_id, name, name_mm, price, item_type, description, description_mm, stock=-1):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO items VALUES (?,?,?,?,?,?,?,1)",
-               (item_id, name, name_mm, price, item_type, description, description_mm))
+    c.execute("INSERT OR REPLACE INTO items VALUES (?,?,?,?,?,?,?,?,?)",
+               (item_id, name, name_mm, price, item_type, description, description_mm, 1, stock))
     conn.commit()
     conn.close()
 
@@ -125,14 +134,39 @@ def delete_item(item_id):
     conn.commit()
     conn.close()
 
+def set_stock(item_id, quantity):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("UPDATE items SET stock=? WHERE id=?", (quantity, item_id))
+    if quantity > 0:
+        c.execute("UPDATE items SET is_active=1 WHERE id=? AND is_active=0", (item_id,))
+    elif quantity == 0:
+        c.execute("UPDATE items SET is_active=0 WHERE id=?", (item_id,))
+    conn.commit()
+    conn.close()
+
+def decrement_stock(item_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT stock FROM items WHERE id=?", (item_id,))
+    row = c.fetchone()
+    if row and row[0] is not None and row[0] > 0:
+        new_stock = row[0] - 1
+        c.execute("UPDATE items SET stock=? WHERE id=?", (new_stock, item_id))
+        if new_stock == 0:
+            c.execute("UPDATE items SET is_active=0 WHERE id=?", (item_id,))
+        conn.commit()
+    conn.close()
+
 def get_all_items():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT * FROM items ORDER BY type, id")
     items = {}
     for row in c.fetchall():
-        items[row[0]] = {"id": row[0], "name": row[1], "name_mm": row[2], "price": row[3], 
-                        "type": row[4], "description": row[5], "description_mm": row[6], "is_active": row[7]}
+        items[row[0]] = {"id": row[0], "name": row[1], "name_mm": row[2], "price": row[3],
+                        "type": row[4], "description": row[5], "description_mm": row[6], "is_active": row[7],
+                        "stock": row[8] if len(row) > 8 else -1}
     conn.close()
     return items
 
@@ -201,6 +235,8 @@ TEXTS = {
         "myorder_btn": "🛒 My Orders",
         "payment_btn": "💳 Payment",
         "lang_btn": "🌐 မြန်မာ",
+        "out_of_stock": "❌ *Out of Stock*",
+        "low_stock": "⚠️ Only {} left!",
     },
     "mm": {
         "welcome": "👋 မင်္ဂလာပါ။\n\nသင်တန်းများနှင့် ဝန်ဆောင်မှုများအတွက် ကူညီပေးမည့် Bot ဖြစ်ပါသည်။",
@@ -223,6 +259,8 @@ TEXTS = {
         "myorder_btn": "🛒 ကျွန်ုပ်၏ အော်ဒါ",
         "payment_btn": "💳 ငွေပေးချေ",
         "lang_btn": "🌐 English",
+        "out_of_stock": "❌ *ကုန်သွားပါပြီ*",
+        "low_stock": "⚠️ {} ခုသာကျန်တော့သည်!",
     }
 }
 
@@ -245,15 +283,25 @@ def items_keyboard(items_dict, prefix, lang="en"):
     for iid, item in items_dict.items():
         name = item.get("name_mm", item["name"]) if lang == "mm" else item["name"]
         icon = "📚" if item["type"] == "course" else "🛠"
-        keyboard.append([InlineKeyboardButton(f"{icon} {name}", callback_data=f"{prefix}{iid}")])
+        stock = item.get("stock", -1)
+        if stock == 0:
+            label = f"{icon} {name} ❌"
+        elif 0 < stock < 3:
+            label = f"{icon} {name} ⚠️"
+        else:
+            label = f"{icon} {name}"
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"{prefix}{iid}")])
     keyboard.append([InlineKeyboardButton(get_text("back", lang), callback_data="back")])
     return InlineKeyboardMarkup(keyboard)
 
-def item_detail_keyboard(item_id, back_target, lang="en"):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(get_text("buy_now", lang), callback_data=f"buy_{item_id}")],
-        [InlineKeyboardButton(get_text("back", lang), callback_data=back_target)]
-    ])
+def item_detail_keyboard(item_id, back_target, lang="en", stock=-1):
+    buttons = []
+    if stock == 0:
+        buttons.append([InlineKeyboardButton(get_text("out_of_stock", lang), callback_data="noop")])
+    else:
+        buttons.append([InlineKeyboardButton(get_text("buy_now", lang), callback_data=f"buy_{item_id}")])
+    buttons.append([InlineKeyboardButton(get_text("back", lang), callback_data=back_target)])
+    return InlineKeyboardMarkup(buttons)
 
 def payment_keyboard(lang="en"):
     return InlineKeyboardMarkup([
@@ -281,6 +329,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "/admin add_service - Add new service\n"
     msg += "/admin list - List all items\n"
     msg += "/admin delete <id> - Delete item\n"
+    msg += "/admin_stock <id> <qty> - Set stock (-1=unlimited)\n"
     msg += "/pending - View pending orders\n"
     msg += "/approve <order_id> - Approve order\n"
     msg += "/admin_stats - Analytics overview\n"
@@ -300,13 +349,17 @@ async def admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for iid, item in all_items.items():
         if item["type"] == "course":
             status = "✅" if item["is_active"] else "❌"
-            msg += f"{status} `{iid}` - {item['name']} ({item['price']} MMK)\n"
+            stock = item.get("stock", -1)
+            stock_label = "∞" if stock == -1 else str(stock)
+            msg += f"{status} `{iid}` - {item['name']} ({item['price']} MMK) [Stock: {stock_label}]\n"
     
     msg += "\n🛠 *Services:*\n"
     for iid, item in all_items.items():
         if item["type"] == "service":
             status = "✅" if item["is_active"] else "❌"
-            msg += f"{status} `{iid}` - {item['name']} ({item['price']} MMK)\n"
+            stock = item.get("stock", -1)
+            stock_label = "∞" if stock == -1 else str(stock)
+            msg += f"{status} `{iid}` - {item['name']} ({item['price']} MMK) [Stock: {stock_label}]\n"
     
     await update.message.reply_text(msg, parse_mode=None)
 
@@ -350,6 +403,39 @@ async def admin_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     delete_item(item_id)
     await update.message.reply_text(f"✅ Item `{item_id}` deleted!", parse_mode=None)
 
+async def admin_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return
+    
+    if len(context.args) < 2:
+        await update.message.reply_text("Usage: `/admin_stock <item_id> <quantity>`\nUse -1 for unlimited.", parse_mode=None)
+        return
+    
+    item_id = context.args[0]
+    try:
+        quantity = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("❌ Quantity must be a number. Use -1 for unlimited.", parse_mode=None)
+        return
+    
+    items = get_all_items()
+    if item_id not in items:
+        await update.message.reply_text(f"❌ Item `{item_id}` not found.", parse_mode=None)
+        return
+    
+    set_stock(item_id, quantity)
+    
+    if quantity == -1:
+        stock_label = "unlimited (∞)"
+    elif quantity == 0:
+        stock_label = "0 (out of stock, item deactivated)"
+    else:
+        stock_label = str(quantity)
+        if quantity > 0:
+            stock_label += " (item reactivated)" if not items[item_id]["is_active"] else ""
+    
+    await update.message.reply_text(f"✅ Stock for `{item_id}` set to {stock_label}!", parse_mode=None)
+
 async def admin_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         return
@@ -384,6 +470,19 @@ async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     update_order_status(order_id, "paid")
     
+    item_id = orders[order_id]["item_id"]
+    items = get_all_items()
+    
+    stock_msg = ""
+    if item_id in items:
+        stock_before = items[item_id].get("stock", -1)
+        if stock_before > 0:
+            decrement_stock(item_id)
+            if stock_before - 1 == 0:
+                stock_msg = "\n⚠️ Stock is now 0 - item auto-deactivated."
+            elif stock_before - 1 < 3:
+                stock_msg = f"\n⚠️ Only {stock_before - 1} left in stock."
+    
     try:
         buyer_id = orders[order_id]["user_id"]
         lang = get_user_lang(buyer_id)
@@ -391,9 +490,9 @@ async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         notify_msg = "🎉 *အတည်ပြုပါပြီ!*\n\nသင့်ငွေလွှဲကို ရရှိပြီး အတည်ပြုပါပြီ။" if lang == "mm" else "🎉 *Payment Approved!*\n\nYour order is confirmed."
         
         await context.bot.send_message(chat_id=buyer_id, text=notify_msg, parse_mode=None)
-        await update.message.reply_text(f"✅ Order `{order_id}` approved!", parse_mode=None)
+        await update.message.reply_text(f"✅ Order `{order_id}` approved!{stock_msg}", parse_mode=None)
     except Exception as e:
-        await update.message.reply_text(f"✅ Approved but couldn't notify: {e}")
+        await update.message.reply_text(f"✅ Approved but couldn't notify: {e}{stock_msg}")
 
 # === ANALYTICS HANDLERS ===
 
@@ -677,9 +776,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name = item.get("name_mm", item["name"]) if lang == "mm" else item["name"]
             desc = item.get("description_mm", item["description"]) if lang == "mm" else item["description"]
             icon = "🛠" if is_service else "📚"
-            price_label = "စျေးနှုန်း" if lang == "mm" else "Price"
+            price_label = "ဈေးနှုန်း" if lang == "mm" else "Price"
             text = f"{icon} *{name}*\n\n{desc}\n\n💰 *{price_label}: {item['price']} MMK*"
-            await query.edit_message_text(text, reply_markup=item_detail_keyboard(data, back, lang), parse_mode=None)
+            stock = item.get("stock", -1)
+            if stock == 0:
+                text += f"\n\n{get_text('out_of_stock', lang)}"
+            elif 0 < stock < 3:
+                text += f"\n\n{get_text('low_stock', lang).format(stock)}"
+            await query.edit_message_text(text, reply_markup=item_detail_keyboard(data, back, lang, stock=stock), parse_mode=None)
     
     elif data.startswith("buy_"):
         raw_id = data[4:]
@@ -689,6 +793,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if iid in collection:
             item = collection[iid]
+            stock = item.get("stock", -1)
+            if stock == 0:
+                await query.answer(get_text("out_of_stock", lang), show_alert=True)
+                return
             name = item.get("name_mm", item["name"]) if lang == "mm" else item["name"]
             text = get_text("added_to_cart", lang).format(name, item['price'], ACCOUNT_NUMBER, ACCOUNT_NAME, item['price'])
             context.bot_data.setdefault("pending_payment", {})[user_id] = {"item_id": raw_id, "price": item['price'], "name": name}
@@ -722,6 +830,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data == "back":
         await query.edit_message_text(get_text("main_menu", lang), reply_markup=main_menu_keyboard(lang))
+    
+    elif data == "noop":
+        pass
 
 # === HEALTH CHECK ===
 async def health_handler(request: web.Request) -> web.Response:
@@ -740,6 +851,7 @@ def main():
     app.add_handler(CommandHandler("admin_add_course", admin_add_course))
     app.add_handler(CommandHandler("admin_add_service", admin_add_service))
     app.add_handler(CommandHandler("admin_delete", admin_delete))
+    app.add_handler(CommandHandler("admin_stock", admin_stock))
     app.add_handler(CommandHandler("admin_stats", admin_stats))
     app.add_handler(CommandHandler("admin_revenue", admin_revenue))
     app.add_handler(CommandHandler("admin_export", admin_export))
