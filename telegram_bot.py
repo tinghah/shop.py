@@ -9,6 +9,7 @@ import json
 import sqlite3
 import logging
 from datetime import datetime
+from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
@@ -22,6 +23,10 @@ if not BOT_TOKEN:
 OWNER_ID = int(os.environ.get("OWNER_ID", "1909898183"))
 ACCOUNT_NUMBER = os.environ.get("ACCOUNT_NUMBER", "09786579514")
 ACCOUNT_NAME = os.environ.get("ACCOUNT_NAME", "Htet Aung Hlaing")
+
+# Webhook configuration
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
+PORT = int(os.environ.get("PORT", "8443"))
 
 # === DATABASE SETUP ===
 DB_FILE = "shop.db"
@@ -551,6 +556,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "back":
         await query.edit_message_text(get_text("main_menu", lang), reply_markup=main_menu_keyboard(lang))
 
+# === HEALTH CHECK ===
+async def health_handler(request: web.Request) -> web.Response:
+    return web.json_response({"status": "ok"})
+
 # === MAIN ===
 def main():
     init_db()
@@ -570,8 +579,25 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_input))
     
-    print("🤖 Bot (SQLite) starting with admin management...")
-    app.run_polling()
+    if WEBHOOK_URL:
+        webhook_path = f"/{BOT_TOKEN}"
+        web_app = web.Application()
+        web_app.router.add_get("/health", health_handler)
+        
+        print(f"🤖 Bot starting in WEBHOOK mode on port {PORT}...")
+        print(f"   Webhook URL: {WEBHOOK_URL}{webhook_path}")
+        print(f"   Health check: {WEBHOOK_URL}/health")
+        
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=webhook_path,
+            webhook_url=f"{WEBHOOK_URL}{webhook_path}",
+            web_app=web_app,
+        )
+    else:
+        print("🤖 Bot starting in POLLING mode...")
+        app.run_polling()
 
 if __name__ == "__main__":
     main()
